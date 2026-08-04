@@ -25,6 +25,8 @@ redacted.
   data through the existing Estonia parser.
 - The generation report lists the exact mapped items added by document
   fallback and the number of added segment records by dimension.
+- A single ZIP download contains the complete RIK annual-report PDF for each
+  fiscal year selected for the Excel workbook, when RIK provides one.
 - Only directly sourceable raw inputs are written. Template formulas remain
   formulas.
 - The template's extended Excel validations are restored after workbook save.

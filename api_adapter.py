@@ -369,3 +369,19 @@ def select_fallback_document(
         )
     )
     return candidates[0] if candidates else None
+
+
+def select_annual_report_pdf(
+    documents: list[CompanyDocument], fiscal_year: int
+) -> CompanyDocument | None:
+    """Select the complete, valid annual-report PDF for a fiscal year."""
+    candidates = [
+        document
+        for document in documents
+        if document.fiscal_year == fiscal_year
+        and document.document_type == "A"
+        and document.validity in {None, "", "K"}
+        and document.report_kind in {None, "", "A", "P"}
+    ]
+    candidates.sort(key=lambda document: -(document.size_bytes or 0))
+    return candidates[0] if candidates else None

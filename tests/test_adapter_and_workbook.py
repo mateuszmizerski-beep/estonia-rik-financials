@@ -2,16 +2,27 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from zipfile import ZipFile
 
 from openpyxl import load_workbook
 
 from api_adapter import preferred_report_types, report_from_lines, source_report_years
 from estonia_extractor import EstonianReport, build_fill_jobs, load_terms
-from financials_service import generate_workbook, workbook_source_details
-from rik_xml_client import AnnualReportAvailability, StatementLine
+from financials_service import (
+    build_annual_report_pdf_bundle,
+    generate_workbook,
+    workbook_source_details,
+)
+from rik_xml_client import (
+    AnnualReportAvailability,
+    CompanyDocument,
+    DownloadedDocument,
+    StatementLine,
+)
 from workbook_preservation import count_extended_validations
 
 
@@ -181,6 +192,42 @@ class WorkbookTests(unittest.TestCase):
             self.assertEqual(workbook.calculation.calcMode, "auto")
             workbook.close()
             self.assertEqual(count_extended_validations(output), 2)
+
+    def test_complete_annual_report_pdfs_are_bundled_by_year(self) -> None:
+        document = CompanyDocument(
+            document_id="pdf-2024",
+            registry_code="70000310",
+            document_type="A",
+            document_name="Annual report PDF",
+            size_bytes=15,
+            status_date=date(2025, 5, 1),
+            validity="K",
+            report_kind="A",
+            fiscal_year=2024,
+            url="https://example.invalid/ar2024.pdf",
+            retrieved_at=datetime(2025, 5, 1, tzinfo=timezone.utc),
+        )
+
+        class DownloadClient:
+            def download_document(self, selected):
+                self.assert_document(selected)
+                return DownloadedDocument(b"%PDF-1.4\n%%EOF", "source.pdf", "application/pdf")
+
+            @staticmethod
+            def assert_document(selected):
+                if selected.document_id != "pdf-2024":
+                    raise AssertionError("Unexpected PDF document")
+
+        bundle = build_annual_report_pdf_bundle(
+            DownloadClient(),
+            [document],
+            [2024],
+            company_name="Fixture Company",
+        )
+        self.assertEqual(bundle.included_years, (2024,))
+        with ZipFile(BytesIO(bundle.content)) as archive:
+            self.assertEqual(archive.namelist(), ["Fixture Company AR 2024.pdf"])
+            self.assertTrue(archive.read(archive.namelist()[0]).startswith(b"%PDF-"))
 
 
 if __name__ == "__main__":

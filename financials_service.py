@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import load_workbook
 
 import estonia_extractor as extractor
-from api_adapter import merge_missing, needs_document_fallback, select_fallback_document
-from rik_xml_client import CompanyDocument, RikError, RikXmlClient
+from api_adapter import (
+    merge_missing,
+    needs_document_fallback,
+    select_annual_report_pdf,
+    select_fallback_document,
+)
+from rik_xml_client import CompanyDocument, DownloadedDocument, RikError, RikXmlClient
 from workbook_preservation import restore_extended_validations
 
 
@@ -23,10 +30,68 @@ class GeneratedWorkbook:
     source_details: list[str]
 
 
+@dataclass(frozen=True)
+class AnnualReportPdfBundle:
+    content: bytes
+    filename: str
+    included_years: tuple[int, ...]
+    warnings: tuple[str, ...]
+
+
 def safe_company_name(value: str) -> str:
     value = re.sub(r'[<>:"/\\|?*]+', "", value or "").strip()
     value = re.sub(r"\s+", " ", value)
     return value[:120] or "Estonia Company"
+
+
+def build_annual_report_pdf_bundle(
+    client: RikXmlClient,
+    documents: list[CompanyDocument],
+    fiscal_years: list[int],
+    *,
+    company_name: str,
+    cached_documents: dict[int, DownloadedDocument] | None = None,
+) -> AnnualReportPdfBundle:
+    selected_years = sorted(set(fiscal_years), reverse=True)
+    cached_documents = cached_documents or {}
+    downloaded_by_year: dict[int, DownloadedDocument] = {}
+    warnings: list[str] = []
+    for year in selected_years:
+        document = select_annual_report_pdf(documents, year)
+        if document is None:
+            warnings.append(f"FY{year}: complete annual-report PDF was not available from RIK.")
+            continue
+        try:
+            downloaded = cached_documents.get(year) or client.download_document(document)
+        except RikError as exc:
+            warnings.append(f"FY{year}: complete annual-report PDF could not be downloaded ({exc}).")
+            continue
+        if b"%PDF-" not in downloaded.content[:1024]:
+            warnings.append(f"FY{year}: RIK's annual-report download was not a valid PDF.")
+            continue
+        downloaded_by_year[year] = downloaded
+
+    output = BytesIO()
+    if downloaded_by_year:
+        with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+            for year in sorted(downloaded_by_year, reverse=True):
+                archive.writestr(
+                    f"{safe_company_name(company_name)} AR {year}.pdf",
+                    downloaded_by_year[year].content,
+                )
+    year_label = (
+        str(selected_years[0])
+        if len(selected_years) == 1
+        else f"{selected_years[-1]}-{selected_years[0]}"
+        if selected_years
+        else "Annual Reports"
+    )
+    return AnnualReportPdfBundle(
+        content=output.getvalue(),
+        filename=f"{safe_company_name(company_name)} Annual Reports {year_label}.zip",
+        included_years=tuple(sorted(downloaded_by_year, reverse=True)),
+        warnings=tuple(warnings),
+    )
 
 
 def workbook_source_details(
@@ -91,6 +156,7 @@ def add_document_fallbacks(
     fiscal_years: list[int],
     *,
     company_name: str,
+    downloaded_documents: dict[int, DownloadedDocument] | None = None,
 ) -> tuple[list[extractor.EstonianReport], list[str]]:
     reports_by_year = {report.year: report for report in reports if report.period_end is not None}
     warnings: list[str] = []
@@ -106,6 +172,8 @@ def add_document_fallbacks(
                 continue
             try:
                 downloaded = client.download_document(document)
+                if downloaded_documents is not None and document.document_type == "A":
+                    downloaded_documents[year] = downloaded
                 suffix = document.extension or Path(downloaded.filename).suffix or ".bin"
                 source_path = temporary_path / f"{document.document_id}_{year}{suffix}"
                 source_path.write_bytes(downloaded.content)

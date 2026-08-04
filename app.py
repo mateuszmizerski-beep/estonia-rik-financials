@@ -9,7 +9,11 @@ from openpyxl import load_workbook
 import streamlit as st
 
 from api_adapter import fetch_structured_reports, source_report_years
-from financials_service import add_document_fallbacks, generate_workbook
+from financials_service import (
+    add_document_fallbacks,
+    build_annual_report_pdf_bundle,
+    generate_workbook,
+)
 from rik_xml_client import RikError, RikXmlClient
 
 
@@ -154,6 +158,7 @@ if lookup:
             st.session_state["documents"] = documents
             st.session_state.pop("structured_result", None)
             st.session_state.pop("generated_workbook", None)
+            st.session_state.pop("annual_report_pdf_bundle", None)
         except RikError as exc:
             st.error(str(exc))
 
@@ -244,14 +249,16 @@ if company is not None:
                         )
                     reports = list(structured.reports)
                     generation_warnings = list(structured.warnings)
+                    client = make_client()
+                    downloaded_annual_reports = {}
                     if use_document_fallback:
-                        client = make_client()
                         reports, fallback_warnings = add_document_fallbacks(
                             client,
                             reports,
                             documents,
                             source_report_years(availability, list(selected_years)),
                             company_name=company.name,
+                            downloaded_documents=downloaded_annual_reports,
                         )
                         generation_warnings.extend(fallback_warnings)
                     with tempfile.TemporaryDirectory() as temporary_directory:
@@ -264,7 +271,16 @@ if company is not None:
                             company_name=company.name,
                             fill_goodwill_amortisation=fill_goodwill_amortisation,
                         )
+                    annual_report_pdf_bundle = build_annual_report_pdf_bundle(
+                        client,
+                        documents,
+                        list(selected_years),
+                        company_name=company.name,
+                        cached_documents=downloaded_annual_reports,
+                    )
+                    generation_warnings.extend(annual_report_pdf_bundle.warnings)
                 st.session_state["generated_workbook"] = generated
+                st.session_state["annual_report_pdf_bundle"] = annual_report_pdf_bundle
                 st.session_state["generation_warnings"] = generation_warnings
             except (RikError, ValueError, OSError) as exc:
                 st.error(f"The workbook could not be created: {exc}")
@@ -290,13 +306,29 @@ if company is not None:
             with st.expander("Generation details", expanded=True):
                 for detail in generated.source_details:
                     st.markdown(f"- {detail}")
-            st.download_button(
+            excel_download_col, pdf_download_col = st.columns(2)
+            excel_download_col.download_button(
                 "Download filled Excel workbook",
                 data=generated.content,
                 file_name=generated.filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
+                use_container_width=True,
             )
+            annual_report_pdf_bundle = st.session_state.get("annual_report_pdf_bundle")
+            if annual_report_pdf_bundle and annual_report_pdf_bundle.included_years:
+                pdf_download_col.download_button(
+                    "Download annual report PDFs (.zip)",
+                    data=annual_report_pdf_bundle.content,
+                    file_name=annual_report_pdf_bundle.filename,
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+                st.caption(
+                    "Complete RIK annual-report PDFs included for: "
+                    + ", ".join(str(year) for year in annual_report_pdf_bundle.included_years)
+                    + "."
+                )
 
     if annual_documents:
         with st.expander("Source documents", expanded=False):
