@@ -20,12 +20,68 @@ class GeneratedWorkbook:
     content: bytes
     filename: str
     messages: list[str]
+    source_details: list[str]
 
 
 def safe_company_name(value: str) -> str:
     value = re.sub(r'[<>:"/\\|?*]+', "", value or "").strip()
     value = re.sub(r"\s+", " ", value)
     return value[:120] or "Estonia Company"
+
+
+def workbook_source_details(
+    jobs: list[extractor.FillJob],
+    *,
+    fill_segments: bool,
+    fill_cogs: bool,
+    fill_goodwill_amortisation: bool,
+) -> list[str]:
+    enabled_flags = {
+        "fill_cogs": fill_cogs,
+        "fill_goodwill_amortisation": fill_goodwill_amortisation,
+    }
+    mapped_items: list[str] = []
+    for mapping in extractor.WORKBOOK_MAPPINGS:
+        if mapping.optional_flag and not enabled_flags.get(mapping.optional_flag, False):
+            continue
+        if mapping.item not in mapped_items:
+            mapped_items.append(mapping.item)
+
+    details: list[str] = []
+    for job in sorted(jobs, key=lambda item: item.year, reverse=True):
+        source_year = job.report.year
+        source_period = (
+            "comparative"
+            if source_year == job.year + 1
+            else "current"
+            if source_year == job.year
+            else "available figures"
+        )
+        fallback_items = [
+            item
+            for item in mapped_items
+            if job.report.get_value(job.value_year, item) is not None
+            and not (job.report.get_source(job.value_year, item) or "").startswith("RIK XML |")
+        ]
+        parts = [f"FY{job.year} ← AR{source_year} {source_period}"]
+        parts.append(
+            f"document fallback items: {', '.join(fallback_items)}"
+            if fallback_items
+            else "structured XML only"
+        )
+        if fill_segments:
+            segment_counts: list[str] = []
+            for segment_by, records in sorted(job.report.segments.get(job.value_year, {}).items()):
+                count = sum(
+                    not (record.source or "").startswith("RIK XML |")
+                    for record in records.values()
+                )
+                if count:
+                    segment_counts.append(f"{segment_by} ({count})")
+            if segment_counts:
+                parts.append(f"document segmentations: {', '.join(segment_counts)}")
+        details.append(" — ".join(parts) + ".")
+    return details
 
 
 def add_document_fallbacks(
@@ -69,10 +125,8 @@ def add_document_fallbacks(
             if primary is None:
                 reports.append(fallback)
                 reports_by_year[year] = fallback
-                warnings.append(f"FY{year}: workbook values came from the source document fallback.")
             else:
                 merge_missing(primary, fallback)
-                warnings.append(f"FY{year}: missing XML values were supplemented from the source document.")
     return reports, warnings
 
 
@@ -94,6 +148,7 @@ def generate_workbook(
         reports,
         years=max(len(selected_years), 1),
         fill_comparative=True,
+        target_years=selected_years,
     )
     jobs = [job for job in jobs if job.year in selected_years]
     if not jobs:
@@ -135,8 +190,15 @@ def generate_workbook(
     extractor.save_workbook(workbook, output_path)
     restore_extended_validations(template_path, output_path)
     filename = f"{safe_company_name(company_name)} Financials.xlsx"
+    source_details = workbook_source_details(
+        jobs,
+        fill_segments=fill_segments,
+        fill_cogs=fill_cogs,
+        fill_goodwill_amortisation=fill_goodwill_amortisation,
+    )
     return GeneratedWorkbook(
         content=output_path.read_bytes(),
         filename=filename,
         messages=messages,
+        source_details=source_details,
     )

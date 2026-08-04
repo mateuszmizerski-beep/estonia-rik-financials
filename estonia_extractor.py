@@ -1950,20 +1950,21 @@ def update_cagr_formulas(ws, jobs: list[FillJob], dry_run: bool) -> list[str]:
 def combined_report_for_year(
     year: int,
     reports_desc: list[EstonianReport],
-    exact_report: EstonianReport | None,
+    preferred_report: EstonianReport,
 ) -> EstonianReport:
-    template_report = exact_report or reports_desc[0]
+    source_year = preferred_report.year
     combined = EstonianReport(
         Path(f"combined_FY{year}"),
-        f"FY{year} combined source view",
+        f"FY{year} sourced primarily from AR{source_year}",
         [],
-        template_report.terms,
-        period_start=template_report.period_start if exact_report else None,
-        period_end=template_report.period_end if exact_report else None,
-        company=template_report.company,
+        preferred_report.terms,
+        period_start=preferred_report.period_start,
+        period_end=preferred_report.period_end,
+        company=preferred_report.company,
     )
 
-    for report in reports_desc:
+    ordered_reports = [preferred_report, *[report for report in reports_desc if report is not preferred_report]]
+    for report in ordered_reports:
         for item, value in report.values.get(year, {}).items():
             if combined.get_value(year, item) is not None:
                 continue
@@ -1982,6 +1983,7 @@ def build_fill_jobs(
     *,
     years: int,
     fill_comparative: bool,
+    target_years: list[int] | None = None,
 ) -> tuple[list[FillJob], list[str]]:
     if years < 1:
         raise ValueError("--years must be at least 1.")
@@ -2000,6 +2002,40 @@ def build_fill_jobs(
         unique_by_year[report.year] = report
 
     sorted_reports = sorted(unique_by_year.values(), key=lambda item: item.year, reverse=True)
+
+    if target_years is not None:
+        requested_years = sorted(set(target_years), reverse=True)[:years]
+        jobs: list[FillJob] = []
+        for year in requested_years:
+            later_report = unique_by_year.get(year + 1)
+            current_report = unique_by_year.get(year)
+            preferred_report = (
+                later_report
+                if later_report is not None
+                and (later_report.values.get(year) or later_report.segments.get(year))
+                else current_report
+            )
+            if preferred_report is None:
+                preferred_report = next(
+                    (
+                        report
+                        for report in sorted_reports
+                        if report.values.get(year) or report.segments.get(year)
+                    ),
+                    None,
+                )
+            if preferred_report is None:
+                messages.append(f"MISS FY{year}: no current or comparative report values")
+                continue
+            jobs.append(
+                FillJob(
+                    combined_report_for_year(year, sorted_reports, preferred_report),
+                    year,
+                    year,
+                )
+            )
+        return jobs, messages
+
     target_years: list[int] = []
     seen_years: set[int] = set()
 
@@ -2029,14 +2065,29 @@ def build_fill_jobs(
             if len(target_years) >= years:
                 break
 
-    jobs = [
-        FillJob(
-            combined_report_for_year(year, sorted_reports, unique_by_year.get(year)),
-            year,
-            year,
+    jobs = []
+    for year in target_years[:years]:
+        later_report = unique_by_year.get(year + 1)
+        current_report = unique_by_year.get(year)
+        preferred_report = (
+            later_report
+            if later_report is not None
+            and (later_report.values.get(year) or later_report.segments.get(year))
+            else current_report
         )
-        for year in target_years[:years]
-    ]
+        if preferred_report is None:
+            preferred_report = next(
+                report
+                for report in sorted_reports
+                if report.values.get(year) or report.segments.get(year)
+            )
+        jobs.append(
+            FillJob(
+                combined_report_for_year(year, sorted_reports, preferred_report),
+                year,
+                year,
+            )
+        )
     return jobs[:years], messages
 
 

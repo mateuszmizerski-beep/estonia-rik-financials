@@ -18,9 +18,13 @@ redacted.
 ## Data flow
 
 - RIK structured statement rows are the primary source.
+- Each historical year prefers the comparative column in the following year's
+  annual report (for example, FY2024 comes from AR2025) so later corrections
+  and reclassifications are retained. The same-year report is the fallback.
 - PDF or BDOC annual reports supplement missing FTE, segment, and disclosure
   data through the existing Estonia parser.
+- The generation report lists the exact mapped items added by document
+  fallback and the number of added segment records by dimension.
 - Only directly sourceable raw inputs are written. Template formulas remain
   formulas.
 - The template's extended Excel validations are restored after workbook save.
-
