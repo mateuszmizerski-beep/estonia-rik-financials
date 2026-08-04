@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://arireg.x-road.eu/producer/">
+  <SOAP-ENV:Body><ns1:majandusaastaAruanneteLoetelu_v1Response>
+    <ns1:paring><ns1:ariregister_kasutajanimi>[REDACTED]</ns1:ariregister_kasutajanimi><ns1:ariregister_parool>[REDACTED]</ns1:ariregister_parool></ns1:paring>
+    <ns1:keha>
+      <ns1:majandusaasta_aruanded><ns1:aruande_kood>14</ns1:aruande_kood><ns1:aruande_nimetus>Balance sheet</ns1:aruande_nimetus><ns1:aruande_aasta>2024</ns1:aruande_aasta><ns1:majandusaasta_algus>2024-01-01Z</ns1:majandusaasta_algus><ns1:majandusaasta_lopp>2024-12-31Z</ns1:majandusaasta_lopp></ns1:majandusaasta_aruanded>
+      <ns1:majandusaasta_aruanded><ns1:aruande_kood>35</ns1:aruande_kood><ns1:aruande_nimetus>Income statement format 1</ns1:aruande_nimetus><ns1:aruande_aasta>2024</ns1:aruande_aasta><ns1:majandusaasta_algus>2024-01-01Z</ns1:majandusaasta_algus><ns1:majandusaasta_lopp>2024-12-31Z</ns1:majandusaasta_lopp></ns1:majandusaasta_aruanded>
+    </ns1:keha>
+  </ns1:majandusaastaAruanneteLoetelu_v1Response></SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

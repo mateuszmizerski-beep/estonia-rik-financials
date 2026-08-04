@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://arireg.x-road.eu/producer/">
+  <SOAP-ENV:Body><ns1:ettevotjaDokumentideLoetelu_v1Response>
+    <ns1:paring><ns1:ariregister_kasutajanimi>[REDACTED]</ns1:ariregister_kasutajanimi><ns1:ariregister_parool>[REDACTED]</ns1:ariregister_parool></ns1:paring>
+    <ns1:keha><ns1:ettevotja_dokumendid><ns1:dokumendi_id>52225</ns1:dokumendi_id><ns1:ariregistri_kood>70000310</ns1:ariregistri_kood><ns1:dokumendi_liik>A</ns1:dokumendi_liik><ns1:dokumendi_nimetus>Annual report PDF</ns1:dokumendi_nimetus><ns1:dokumendi_suurus>797593</ns1:dokumendi_suurus><ns1:dokumendi_seisu_kuupaev>2025-07-01Z</ns1:dokumendi_seisu_kuupaev><ns1:dokumendi_kehtivus>K</ns1:dokumendi_kehtivus><ns1:aruande_liik>A</ns1:aruande_liik><ns1:aruandeaasta>2024</ns1:aruandeaasta><ns1:dokumendi_url>https://example.invalid/annual-report.pdf</ns1:dokumendi_url></ns1:ettevotja_dokumendid></ns1:keha>
+  </ns1:ettevotjaDokumentideLoetelu_v1Response></SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

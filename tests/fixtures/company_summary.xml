@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://arireg.x-road.eu/producer/">
+  <SOAP-ENV:Body>
+    <ns1:lihtandmed_v2Response>
+      <ns1:paring>
+        <ns1:ariregister_kasutajanimi>[REDACTED]</ns1:ariregister_kasutajanimi>
+        <ns1:ariregister_parool>[REDACTED]</ns1:ariregister_parool>
+      </ns1:paring>
+      <ns1:keha>
+        <ns1:ettevotjad><ns1:item>
+          <ns1:evnimi>Registrite ja Infosüsteemide Keskus</ns1:evnimi>
+          <ns1:oiguslik_vorm_tekstina>Government agency</ns1:oiguslik_vorm_tekstina>
+          <ns1:ariregistri_kood>70000310</ns1:ariregistri_kood>
+          <ns1:staatus_tekstina>Entered in the register</ns1:staatus_tekstina>
+          <ns1:evaadressid><ns1:aadress_ads__ads_normaliseeritud_taisaadress>Harju maakond, Tallinn, Lõkke tn 4</ns1:aadress_ads__ads_normaliseeritud_taisaadress></ns1:evaadressid>
+        </ns1:item></ns1:ettevotjad>
+      </ns1:keha>
+    </ns1:lihtandmed_v2Response>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

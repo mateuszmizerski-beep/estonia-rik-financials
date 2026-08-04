@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://arireg.x-road.eu/producer/">
+  <SOAP-ENV:Body><ns1:majandusaastaAruanneteKirjed_v1Response>
+    <ns1:paring><ns1:ariregister_kasutajanimi>[REDACTED]</ns1:ariregister_kasutajanimi><ns1:ariregister_parool>[REDACTED]</ns1:ariregister_parool></ns1:paring>
+    <ns1:keha>
+      <ns1:aruande_liik>35</ns1:aruande_liik><ns1:aruande_nimetus>Income statement format 1</ns1:aruande_nimetus><ns1:majandusaasta_algus>2024-01-01Z</ns1:majandusaasta_algus><ns1:majandusaasta_lopp>2024-12-31Z</ns1:majandusaasta_lopp>
+      <ns1:majandusaasta_aruanded_read><ns1:rea_nr>10</ns1:rea_nr><ns1:rea_nimetus>Revenue</ns1:rea_nimetus><ns1:majandusaasta_aruanded_veerud><ns1:veeru_kood>A1</ns1:veeru_kood><ns1:veeru_nimetus>In the financial year</ns1:veeru_nimetus><ns1:vaartus>5534707</ns1:vaartus></ns1:majandusaasta_aruanded_veerud><ns1:majandusaasta_aruanded_veerud><ns1:veeru_kood>A2</ns1:veeru_kood><ns1:veeru_nimetus>In the previous financial year</ns1:veeru_nimetus><ns1:vaartus>43555</ns1:vaartus></ns1:majandusaasta_aruanded_veerud></ns1:majandusaasta_aruanded_read>
+      <ns1:majandusaasta_aruanded_read><ns1:rea_nr>40</ns1:rea_nr><ns1:rea_nimetus>Other operating income</ns1:rea_nimetus><ns1:majandusaasta_aruanded_veerud><ns1:veeru_kood>A1</ns1:veeru_kood><ns1:veeru_nimetus>In the financial year</ns1:veeru_nimetus><ns1:vaartus>5551</ns1:vaartus></ns1:majandusaasta_aruanded_veerud></ns1:majandusaasta_aruanded_read>
+      <ns1:majandusaasta_aruanded_read><ns1:rea_nr>110</ns1:rea_nr><ns1:rea_nimetus>Operating profit (loss)</ns1:rea_nimetus><ns1:majandusaasta_aruanded_veerud><ns1:veeru_kood>A1</ns1:veeru_kood><ns1:veeru_nimetus>In the financial year</ns1:veeru_nimetus><ns1:vaartus>120000</ns1:vaartus></ns1:majandusaasta_aruanded_veerud></ns1:majandusaasta_aruanded_read>
+    </ns1:keha>
+  </ns1:majandusaastaAruanneteKirjed_v1Response></SOAP-ENV:Body>
+</SOAP-ENV:Envelope>
