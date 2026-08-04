@@ -359,6 +359,23 @@ class FillJob:
     report: "EstonianReport"
     year: int
     value_year: int
+    source_year: int | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+
+    @property
+    def period_days(self) -> int | None:
+        if self.period_start is None or self.period_end is None:
+            return None
+        return (self.period_end - self.period_start).days + 1
+
+    @property
+    def requires_annualisation(self) -> bool:
+        return (
+            self.period_days is not None
+            and self.period_days > MIN_ANNUALISATION_DAYS
+            and self.period_days not in FULL_YEAR_DAY_COUNTS
+        )
 
 
 @dataclass
@@ -398,6 +415,7 @@ class EstonianReport:
     period_start: date | None = None
     period_end: date | None = None
     company: str | None = None
+    accounting_basis: str = "unknown"
     values: dict[int, dict[str, Decimal]] = field(default_factory=dict)
     sources: dict[int, dict[str, str]] = field(default_factory=dict)
     segments: dict[int, dict[str, dict[str, SegmentRecord]]] = field(default_factory=dict)
@@ -976,6 +994,20 @@ def pdf_text_lines(pdf_bytes: bytes) -> list[str]:
     return [line for line in (raw.replace("\xa0", " ").strip() for raw in text.splitlines()) if line]
 
 
+def detect_document_accounting_basis(lines: list[str]) -> str:
+    """Identify a consolidated report without assuming every filing is a group filing."""
+    normalized_lines = [normalize(line) for line in lines]
+    if any(
+        "konsolideeritud raamatupidamise aastaaruanne" in line
+        or "consolidated financial statements" in line
+        for line in normalized_lines
+    ):
+        return "consolidated"
+    if any("konsolideerimata" in line or "unconsolidated" in line for line in normalized_lines):
+        return "unconsolidated"
+    return "reported"
+
+
 def load_terms(mapping_json: Path | None) -> dict[str, list[str]]:
     terms = {item: list(values) for item, values in DEFAULT_TERMS.items()}
     if mapping_json is None:
@@ -1008,6 +1040,7 @@ def parse_report_from_pdf_bytes(
         lines,
         terms,
         money_multiplier=detect_money_multiplier(lines),
+        accounting_basis=detect_document_accounting_basis(lines),
     )
     report.period_start = find_following_date(lines, "aruandeaasta algus:")
     report.period_end = find_following_date(lines, "aruandeaasta lõpp:")
@@ -1961,6 +1994,7 @@ def combined_report_for_year(
         period_start=preferred_report.period_start,
         period_end=preferred_report.period_end,
         company=preferred_report.company,
+        accounting_basis=preferred_report.accounting_basis,
     )
 
     ordered_reports = [preferred_report, *[report for report in reports_desc if report is not preferred_report]]
@@ -1976,6 +2010,24 @@ def combined_report_for_year(
                     combined_records[label] = copy(record)
 
     return combined
+
+
+def fill_job_for_year(
+    year: int,
+    reports_desc: list[EstonianReport],
+    preferred_report: EstonianReport,
+    current_report: EstonianReport | None,
+) -> FillJob:
+    """Keep revised values and target-year period metadata as separate concepts."""
+    period_report = current_report if current_report is not None and current_report.year == year else None
+    return FillJob(
+        combined_report_for_year(year, reports_desc, preferred_report),
+        year,
+        year,
+        source_year=preferred_report.year,
+        period_start=period_report.period_start if period_report else None,
+        period_end=period_report.period_end if period_report else None,
+    )
 
 
 def build_fill_jobs(
@@ -2027,13 +2079,7 @@ def build_fill_jobs(
             if preferred_report is None:
                 messages.append(f"MISS FY{year}: no current or comparative report values")
                 continue
-            jobs.append(
-                FillJob(
-                    combined_report_for_year(year, sorted_reports, preferred_report),
-                    year,
-                    year,
-                )
-            )
+            jobs.append(fill_job_for_year(year, sorted_reports, preferred_report, current_report))
         return jobs, messages
 
     target_years: list[int] = []
@@ -2041,10 +2087,26 @@ def build_fill_jobs(
 
     if len(sorted_reports) == 1:
         report = sorted_reports[0]
-        jobs = [FillJob(report, report.year, report.year)]
+        jobs = [
+            FillJob(
+                report,
+                report.year,
+                report.year,
+                source_year=report.year,
+                period_start=report.period_start,
+                period_end=report.period_end,
+            )
+        ]
         seen_years.add(report.year)
         if fill_comparative:
-            jobs.append(FillJob(report, report.year - 1, report.year - 1))
+            jobs.append(
+                FillJob(
+                    report,
+                    report.year - 1,
+                    report.year - 1,
+                    source_year=report.year,
+                )
+            )
         return jobs[:years], messages
 
     for report in sorted_reports:
@@ -2081,13 +2143,7 @@ def build_fill_jobs(
                 for report in sorted_reports
                 if report.values.get(year) or report.segments.get(year)
             )
-        jobs.append(
-            FillJob(
-                combined_report_for_year(year, sorted_reports, preferred_report),
-                year,
-                year,
-            )
-        )
+        jobs.append(fill_job_for_year(year, sorted_reports, preferred_report, current_report))
     return jobs[:years], messages
 
 
@@ -2446,12 +2502,12 @@ def set_formula_cell(ws, row: int, col: int, formula: str, dry_run: bool) -> Non
 
 def configure_annualisation(
     ws,
-    report: EstonianReport,
+    job: FillJob,
     year: int,
     col: int,
     dry_run: bool,
 ) -> tuple[dict[str, int], list[str]]:
-    if report.period_start is None or report.period_end is None:
+    if job.period_start is None or job.period_end is None:
         raise ValueError(f"Could not identify the reporting period dates for FY{year}.")
     col_letter = get_column_letter(col)
     annualisation_start_row = find_row(ws, "Annualisation", None, None)
@@ -2484,8 +2540,8 @@ def configure_annualisation(
             ws.row_dimensions[row].hidden = False
         start_cell = ws.cell(row=rows["Starting date"], column=col)
         end_cell = ws.cell(row=rows["Ending date"], column=col)
-        start_cell.value = report.period_start
-        end_cell.value = report.period_end
+        start_cell.value = job.period_start
+        end_cell.value = job.period_end
         start_cell.number_format = "dd-mm-yyyy"
         end_cell.number_format = "dd-mm-yyyy"
 
@@ -2552,7 +2608,7 @@ def configure_annualisation(
         set_formula_cell(ws, reported_rows[label], col, formula, dry_run)
 
     return rows, [
-        f"ANNUALISE FY{year}: {report.period_start.isoformat()} to {report.period_end.isoformat()} ({report.period_days} days)",
+        f"ANNUALISE FY{year}: {job.period_start.isoformat()} to {job.period_end.isoformat()} ({job.period_days} days)",
         f"SHOW annualisation rows: {annualisation_start_row}:{annualisation_end_row}",
     ]
 
@@ -2572,12 +2628,9 @@ def fill_period(
     messages: list[str] = []
     confidence_labels: set[str] = set()
     annualisation_rows: dict[str, int] | None = None
-    if (
-        job.value_year == job.report.year
-        and job.report.requires_annualisation
-    ):
+    if job.requires_annualisation:
         annualisation_rows, annualisation_messages = configure_annualisation(
-            ws, job.report, job.year, col, dry_run
+            ws, job, job.year, col, dry_run
         )
         messages.extend(annualisation_messages)
 

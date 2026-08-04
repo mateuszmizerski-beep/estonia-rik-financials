@@ -38,6 +38,7 @@ INCOME_TYPES = (
 )
 CASH_FLOW_TYPES = ("18", "19", "04", "4", "13", "32", "33")
 FIXED_ASSET_TYPES = ("05", "5", "06", "6")
+UNCONSOLIDATED_TYPES = {"22", "23", "28", "29", "30", "32", "33", "37", "40", "41"}
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Muu äritulu",
         "Other operating income",
         "Other business income",
+        "Other revenue",
     ),
     "COGS": (
         "Kaubad, toore, materjal ja teenused",
@@ -92,6 +94,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Depreciation, amortization and impairment loss",
         "Depreciation and amortisation",
         "Depreciation and amortization",
+        "Depreciation and impairment of fixed assets",
     ),
     "Fixed assets": (
         "Kokku põhivarad",
@@ -100,6 +103,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Põhivarad",
         "Non-current assets",
         "Total non-current assets",
+        "Non-current assets total",
         "Fixed assets",
     ),
     "Current assets": (
@@ -109,11 +113,13 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Käibevarad",
         "Current assets",
         "Total current assets",
+        "Current assets total",
     ),
     "Stocks / inventories": (
         "Varud",
         "Kokku varud",
         "Inventories",
+        "Inventories total",
         "Stocks",
     ),
     "Trade debtors / receivables": (
@@ -145,6 +151,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Long-term loans and borrowings",
         "Non-current borrowings",
         "Non-current loans",
+        "Long-term loan liabilities total",
     ),
     "Debt ST": (
         "Lühiajalised laenukohustised",
@@ -153,6 +160,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "Short-term loans and borrowings",
         "Current borrowings",
         "Current loans",
+        "Loan liabilities total",
     ),
     "CAPEX": (
         "Tasutud materiaalsete ja immateriaalsete põhivarade soetamisel",
@@ -168,22 +176,45 @@ NORMALIZED_ALIASES = {
     item: {_norm(alias) for alias in aliases} for item, aliases in ALIASES.items()
 }
 
-# Stable row identifiers for the most common XBRL income-statement layout.
-ROW_NUMBER_HINTS: dict[tuple[str, str], str] = {
-    ("35", "10"): "Revenue",
-    ("35", "40"): "Other income",
-    ("35", "60"): "COGS",
-    ("35", "90"): "D&A",
-    ("35", "110"): "Reported EBIT",
-    ("15", "10"): "Revenue",
-    ("15", "40"): "Other income",
-    ("15", "60"): "COGS",
-    ("15", "90"): "D&A",
-    ("15", "110"): "Reported EBIT",
-}
+# Stable RIK row identifiers, guarded by the expected normalized line label.  RIK
+# uses the same row scheme across consolidated, standalone and unconsolidated
+# variants, but different schemes for income-statement layout 1 and layout 2.
+ROW_NUMBER_HINTS: dict[tuple[str, str], str] = {}
+for report_type in BALANCE_TYPES:
+    ROW_NUMBER_HINTS.update(
+        {
+            (report_type, "10"): "Cash and cash equivalents",
+            (report_type, "70"): "Stocks / inventories",
+            (report_type, "100"): "Current assets",
+            (report_type, "200"): "Fixed assets",
+            (report_type, "310"): "Debt ST",
+            (report_type, "410"): "Debt LT",
+        }
+    )
+for report_type in ("35", "15", "02", "2", "23", "37", "40", "28", "30"):
+    ROW_NUMBER_HINTS.update(
+        {
+            (report_type, "10"): "Revenue",
+            (report_type, "40"): "Other income",
+            (report_type, "110"): "COGS",
+            (report_type, "140"): "D&A",
+            (report_type, "170"): "Reported EBIT",
+        }
+    )
+for report_type in ("36", "16", "03", "3", "41", "29"):
+    ROW_NUMBER_HINTS.update(
+        {
+            (report_type, "10"): "Revenue",
+            (report_type, "25"): "COGS",
+            (report_type, "40"): "Other income",
+            (report_type, "170"): "Reported EBIT",
+        }
+    )
+for report_type in CASH_FLOW_TYPES:
+    ROW_NUMBER_HINTS[(report_type, "281")] = "CAPEX"
 
 
-def canonical_item(line: StatementLine) -> str | None:
+def guarded_row_hint(line: StatementLine) -> str | None:
     report_type = line.report_type.lstrip("0") or "0"
     hinted = ROW_NUMBER_HINTS.get((line.report_type, line.row_number)) or ROW_NUMBER_HINTS.get(
         (report_type, line.row_number)
@@ -191,6 +222,14 @@ def canonical_item(line: StatementLine) -> str | None:
     normalized_name = _norm(line.row_name)
     if hinted and normalized_name in NORMALIZED_ALIASES[hinted]:
         return hinted
+    return None
+
+
+def canonical_item(line: StatementLine) -> str | None:
+    hinted = guarded_row_hint(line)
+    if hinted:
+        return hinted
+    normalized_name = _norm(line.row_name)
     for item, aliases in NORMALIZED_ALIASES.items():
         if normalized_name in aliases:
             return item
@@ -216,6 +255,18 @@ def _source(line: StatementLine) -> str:
     )
 
 
+def structured_accounting_basis(lines: list[StatementLine]) -> str:
+    report_types = {line.report_type.lstrip("0") or "0" for line in lines}
+    report_names = {_norm(line.report_name) for line in lines}
+    if report_types and report_types.issubset(UNCONSOLIDATED_TYPES) or any(
+        "konsolideerimata" in name or "unconsolidated" in name for name in report_names
+    ):
+        return "unconsolidated"
+    if any("konsolideeritud" in name or "consolidated" in name for name in report_names):
+        return "consolidated"
+    return "reported"
+
+
 def report_from_lines(
     registry_code: str,
     company_name: str,
@@ -231,12 +282,14 @@ def report_from_lines(
         period_start=dated_line.period_start if dated_line else None,
         period_end=dated_line.period_end if dated_line else None,
         company=company_name,
+        accounting_basis=structured_accounting_basis(lines),
     )
     if report.period_end is None:
         report.period_end = next(
             (line.period_end for line in lines if line.period_end is not None), None
         )
-    for line in lines:
+    ordered_lines = sorted(lines, key=lambda line: 0 if guarded_row_hint(line) else 1)
+    for line in ordered_lines:
         if line.value is None:
             continue
         item = canonical_item(line)
@@ -324,8 +377,22 @@ def merge_missing(primary: EstonianReport, fallback: EstonianReport) -> Estonian
         primary.period_end = fallback.period_end
     if not primary.company:
         primary.company = fallback.company
+    if primary.accounting_basis == "unknown":
+        primary.accounting_basis = fallback.accounting_basis
     for year, values in fallback.values.items():
+        has_detailed_da = all(
+            values.get(item) is not None
+            for item in ("Total depreciation", "Total amortisation")
+        )
+        if has_detailed_da:
+            # The statement-level D&A row can differ from the audited fixed-asset
+            # notes. When both note components are disclosed, keep the more
+            # granular pair and let the workbook calculate their combined total.
+            primary.values.setdefault(year, {}).pop("D&A", None)
+            primary.sources.setdefault(year, {}).pop("D&A", None)
         for item, value in values.items():
+            if item == "D&A" and has_detailed_da:
+                continue
             if primary.get_value(year, item) is None:
                 primary.set_value(year, item, value, fallback.get_source(year, item) or "Annual report")
     for year, segmentations in fallback.segments.items():
@@ -337,6 +404,68 @@ def merge_missing(primary: EstonianReport, fallback: EstonianReport) -> Estonian
     return primary
 
 
+WORKBOOK_FINANCIAL_ITEMS = {
+    "Revenue",
+    "Other income",
+    "COGS",
+    "Reported EBIT",
+    "Total depreciation",
+    "Total amortisation",
+    "D&A",
+    "Fixed assets",
+    "Current assets",
+    "Stocks / inventories",
+    "Trade debtors / receivables",
+    "Trade creditors / payables",
+    "Cash and cash equivalents",
+    "Debt LT",
+    "Debt ST",
+    "Investments in tangible assets",
+    "Investments in intangible assets",
+    "CAPEX",
+    "FTEs",
+    "Goodwill amortisation",
+    "Management EBITDA",
+}
+
+
+def replace_unconsolidated_with_consolidated(
+    primary: EstonianReport, fallback: EstonianReport
+) -> dict[int, list[str]]:
+    """Replace a complete workbook block instead of mixing accounting perimeters."""
+    if primary.accounting_basis != "unconsolidated" or fallback.accounting_basis != "consolidated":
+        return {}
+
+    replaced: dict[int, list[str]] = {}
+    for year, fallback_values in fallback.values.items():
+        anchors = {
+            item
+            for item in ("Revenue", "Reported EBIT", "Fixed assets", "Current assets")
+            if fallback_values.get(item) is not None
+        }
+        if len(anchors) < 3:
+            continue
+        primary_values = primary.values.setdefault(year, {})
+        primary_sources = primary.sources.setdefault(year, {})
+        for item in WORKBOOK_FINANCIAL_ITEMS:
+            primary_values.pop(item, None)
+            primary_sources.pop(item, None)
+        for item, value in fallback_values.items():
+            if item not in WORKBOOK_FINANCIAL_ITEMS:
+                continue
+            primary.set_value(year, item, value, fallback.get_source(year, item) or "Annual report")
+        primary.segments[year] = {
+            segment_by: {label: copy(record) for label, record in records.items()}
+            for segment_by, records in fallback.segments.get(year, {}).items()
+        }
+        replaced[year] = sorted(
+            item for item in fallback_values if item in WORKBOOK_FINANCIAL_ITEMS
+        )
+    if replaced:
+        primary.accounting_basis = "consolidated"
+    return replaced
+
+
 def needs_document_fallback(report: EstonianReport, fiscal_year: int) -> bool:
     core_items = (
         "Revenue",
@@ -346,14 +475,16 @@ def needs_document_fallback(report: EstonianReport, fiscal_year: int) -> bool:
         "Cash and cash equivalents",
         "FTEs",
     )
-    return any(report.get_value(fiscal_year, item) is None for item in core_items) or not report.segments.get(
-        fiscal_year
+    return (
+        report.accounting_basis == "unconsolidated"
+        or any(report.get_value(fiscal_year, item) is None for item in core_items)
+        or not report.segments.get(fiscal_year)
     )
 
 
-def select_fallback_document(
+def fallback_document_candidates(
     documents: list[CompanyDocument], fiscal_year: int
-) -> CompanyDocument | None:
+) -> list[CompanyDocument]:
     candidates = [
         document
         for document in documents
@@ -368,6 +499,13 @@ def select_fallback_document(
             -(document.size_bytes or 0),
         )
     )
+    return candidates
+
+
+def select_fallback_document(
+    documents: list[CompanyDocument], fiscal_year: int
+) -> CompanyDocument | None:
+    candidates = fallback_document_candidates(documents, fiscal_year)
     return candidates[0] if candidates else None
 
 

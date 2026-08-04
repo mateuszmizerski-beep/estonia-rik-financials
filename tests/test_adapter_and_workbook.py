@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,7 +11,14 @@ from zipfile import ZipFile
 
 from openpyxl import load_workbook
 
-from api_adapter import preferred_report_types, report_from_lines, source_report_years
+from api_adapter import (
+    fallback_document_candidates,
+    merge_missing,
+    preferred_report_types,
+    replace_unconsolidated_with_consolidated,
+    report_from_lines,
+    source_report_years,
+)
 from estonia_extractor import EstonianReport, build_fill_jobs, load_terms
 from financials_service import (
     build_annual_report_pdf_bundle,
@@ -28,6 +36,7 @@ from workbook_preservation import count_extended_validations
 
 PROJECT = Path(__file__).parents[1]
 TEMPLATE = PROJECT / "assets" / "gainpro_template_eur.xlsx"
+LIVE_FIXTURES = PROJECT / "tests" / "fixtures" / "live"
 
 
 def availability(report_type: str, year: int = 2024) -> AnnualReportAvailability:
@@ -63,6 +72,36 @@ def line(
     )
 
 
+def fixture_lines(registry_code: str, year: int) -> list[StatementLine]:
+    payload = json.loads((LIVE_FIXTURES / f"{registry_code}.json").read_text(encoding="utf-8"))
+    lines: list[StatementLine] = []
+    for statement in payload["statements"]:
+        if statement["fiscal_year"] != year:
+            continue
+        for item in statement["lines"]:
+            lines.append(
+                StatementLine(
+                    registry_code=item["registry_code"],
+                    fiscal_year=item["fiscal_year"],
+                    report_type=item["report_type"],
+                    report_name=item["report_name"],
+                    period_start=date.fromisoformat(item["period_start"])
+                    if item["period_start"]
+                    else None,
+                    period_end=date.fromisoformat(item["period_end"])
+                    if item["period_end"]
+                    else None,
+                    row_number=item["row_number"],
+                    row_name=item["row_name"],
+                    column_code=item["column_code"],
+                    column_name=item["column_name"],
+                    value=Decimal(item["value"]) if item["value"] is not None else None,
+                    retrieved_at=datetime.fromisoformat(item["retrieved_at"]),
+                )
+            )
+    return lines
+
+
 class AdapterTests(unittest.TestCase):
     def test_consolidated_statements_are_preferred(self) -> None:
         items = [
@@ -93,6 +132,150 @@ class AdapterTests(unittest.TestCase):
     def test_source_report_years_include_next_filing(self) -> None:
         items = [availability("35", 2025), availability("35", 2024)]
         self.assertEqual(source_report_years(items, [2024]), [2025, 2024])
+
+    def test_live_layout_one_rows_map_by_guarded_row_number(self) -> None:
+        report = report_from_lines(
+            "14847036", "Botguard OÜ", 2024, fixture_lines("14847036", 2024)
+        )
+        expected = {
+            "Revenue": "21035457",
+            "Other income": "0",
+            "COGS": "-900749",
+            "Reported EBIT": "-1850400",
+            "D&A": "-91860",
+            "Fixed assets": "0",
+            "Current assets": "22235939",
+            "Stocks / inventories": "0",
+            "Cash and cash equivalents": "328071",
+            "Debt ST": "0",
+            "Debt LT": "0",
+            "CAPEX": "0",
+        }
+        for item, value in expected.items():
+            self.assertEqual(report.get_value(2024, item), Decimal(value), item)
+            self.assertTrue((report.get_source(2024, item) or "").startswith("RIK XML |"))
+        self.assertEqual(report.get_value(2023, "Revenue"), Decimal("8068698"))
+        self.assertEqual(report.accounting_basis, "reported")
+
+    def test_live_layout_two_and_unconsolidated_rows_map(self) -> None:
+        solarstone = report_from_lines(
+            "12916046", "Solarstone OÜ", 2025, fixture_lines("12916046", 2025)
+        )
+        self.assertEqual(solarstone.get_value(2024, "Revenue"), Decimal("1275012"))
+        self.assertEqual(solarstone.get_value(2024, "COGS"), Decimal("-2040506"))
+        self.assertEqual(solarstone.get_value(2024, "Reported EBIT"), Decimal("-2622236"))
+        self.assertEqual(solarstone.get_value(2024, "Stocks / inventories"), Decimal("1209056"))
+
+        blrt = report_from_lines(
+            "10068499", "BLRT Grupp AS", 2025, fixture_lines("10068499", 2025)
+        )
+        self.assertEqual(blrt.accounting_basis, "unconsolidated")
+        self.assertEqual(blrt.get_value(2024, "Fixed assets"), Decimal("245754000"))
+        self.assertEqual(blrt.get_value(2024, "Current assets"), Decimal("101073000"))
+        self.assertEqual(blrt.get_value(2024, "Other income"), Decimal("8538000"))
+        self.assertEqual(blrt.get_value(2024, "CAPEX"), Decimal("-16892000"))
+
+    def test_consolidated_document_replaces_unconsolidated_xml_as_a_block(self) -> None:
+        primary = report_from_lines(
+            "10068499", "BLRT Grupp AS", 2025, fixture_lines("10068499", 2025)
+        )
+        fallback = EstonianReport(
+            Path("blrt-2025.pdf"),
+            "Consolidated annual report",
+            [],
+            load_terms(None),
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 12, 31),
+            company="BLRT Grupp AS",
+            accounting_basis="consolidated",
+        )
+        for item, value in {
+            "Revenue": "440038000",
+            "Reported EBIT": "36971000",
+            "Fixed assets": "284692000",
+            "Current assets": "304764000",
+            "FTEs": "3663",
+        }.items():
+            fallback.set_value(2024, item, Decimal(value), "Consolidated annual report")
+
+        replaced = replace_unconsolidated_with_consolidated(primary, fallback)
+        self.assertIn(2024, replaced)
+        self.assertEqual(primary.accounting_basis, "consolidated")
+        self.assertEqual(primary.get_value(2024, "Revenue"), Decimal("440038000"))
+        self.assertIsNone(primary.get_value(2024, "COGS"))
+        self.assertEqual(primary.get_value(2024, "FTEs"), Decimal("3663"))
+
+    def test_pdf_is_tried_before_bdoc(self) -> None:
+        documents = [
+            CompanyDocument(
+                document_id="same",
+                registry_code="70000310",
+                document_type=document_type,
+                document_name=document_type,
+                size_bytes=size,
+                status_date=date(2025, 5, 1),
+                validity="K",
+                report_kind="A",
+                fiscal_year=2024,
+                url=f"https://example.invalid/{document_type}",
+                retrieved_at=datetime(2025, 5, 1, tzinfo=timezone.utc),
+            )
+            for document_type, size in (("D", 500), ("A", 100))
+        ]
+        self.assertEqual(
+            [item.document_type for item in fallback_document_candidates(documents, 2024)],
+            ["A", "D"],
+        )
+
+    def test_detailed_note_da_replaces_statement_level_combined_value(self) -> None:
+        primary = EstonianReport(
+            Path("structured.xml"),
+            "RIK structured fixture",
+            [],
+            load_terms(None),
+            company="Fixture Company",
+        )
+        primary.set_value(2024, "D&A", Decimal("24460"), "RIK XML | cash flow row 140")
+
+        fallback = EstonianReport(
+            Path("annual-report.pdf"),
+            "Annual report fixture",
+            [],
+            load_terms(None),
+            company="Fixture Company",
+        )
+        fallback.set_value(2024, "D&A", Decimal("25000"), "Cash flow statement")
+        fallback.set_value(2024, "Total depreciation", Decimal("8810"), "Tangible assets note")
+        fallback.set_value(2024, "Total amortisation", Decimal("19800"), "Intangible assets note")
+
+        merge_missing(primary, fallback)
+
+        self.assertIsNone(primary.get_value(2024, "D&A"))
+        self.assertEqual(primary.get_value(2024, "Total depreciation"), Decimal("8810"))
+        self.assertEqual(primary.get_value(2024, "Total amortisation"), Decimal("19800"))
+
+    def test_partial_note_da_does_not_replace_combined_xml_value(self) -> None:
+        primary = EstonianReport(
+            Path("structured.xml"),
+            "RIK structured fixture",
+            [],
+            load_terms(None),
+            company="Fixture Company",
+        )
+        primary.set_value(2024, "D&A", Decimal("24460"), "RIK XML | cash flow row 140")
+        fallback = EstonianReport(
+            Path("annual-report.pdf"),
+            "Annual report fixture",
+            [],
+            load_terms(None),
+            company="Fixture Company",
+        )
+        fallback.set_value(2024, "Total depreciation", Decimal("8810"), "Tangible assets note")
+
+        merge_missing(primary, fallback)
+
+        self.assertEqual(primary.get_value(2024, "D&A"), Decimal("24460"))
+        self.assertEqual(primary.get_value(2024, "Total depreciation"), Decimal("8810"))
 
     def test_next_annual_report_comparatives_take_priority(self) -> None:
         reports: list[EstonianReport] = []
@@ -143,6 +326,41 @@ class AdapterTests(unittest.TestCase):
         detail_2024 = next(detail for detail in details if detail.startswith("FY2024"))
         self.assertIn("FY2024 ← AR2025 comparative", detail_2024)
         self.assertIn("document fallback items: FTEs", detail_2024)
+
+    def test_comparative_value_keeps_target_year_period_dates(self) -> None:
+        current = EstonianReport(
+            Path("AR2020.xml"),
+            "AR2020",
+            [],
+            load_terms(None),
+            period_start=date(2019, 11, 12),
+            period_end=date(2020, 12, 31),
+            company="Fixture Company",
+        )
+        current.set_value(2020, "Revenue", Decimal("80"), "AR2020 current")
+        later = EstonianReport(
+            Path("AR2021.xml"),
+            "AR2021",
+            [],
+            load_terms(None),
+            period_start=date(2021, 1, 1),
+            period_end=date(2021, 12, 31),
+            company="Fixture Company",
+        )
+        later.set_value(2020, "Revenue", Decimal("91"), "AR2021 comparative")
+
+        jobs, _ = build_fill_jobs(
+            [later, current],
+            years=1,
+            fill_comparative=True,
+            target_years=[2020],
+        )
+
+        self.assertEqual(jobs[0].report.get_value(2020, "Revenue"), Decimal("91"))
+        self.assertEqual(jobs[0].source_year, 2021)
+        self.assertEqual(jobs[0].period_start, date(2019, 11, 12))
+        self.assertEqual(jobs[0].period_end, date(2020, 12, 31))
+        self.assertTrue(jobs[0].requires_annualisation)
 
 
 class WorkbookTests(unittest.TestCase):

@@ -10,11 +10,14 @@ import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import load_workbook
+from pypdf.errors import PyPdfError
 
 import estonia_extractor as extractor
 from api_adapter import (
+    fallback_document_candidates,
     merge_missing,
     needs_document_fallback,
+    replace_unconsolidated_with_consolidated,
     select_annual_report_pdf,
     select_fallback_document,
 )
@@ -105,16 +108,9 @@ def workbook_source_details(
         "fill_cogs": fill_cogs,
         "fill_goodwill_amortisation": fill_goodwill_amortisation,
     }
-    mapped_items: list[str] = []
-    for mapping in extractor.WORKBOOK_MAPPINGS:
-        if mapping.optional_flag and not enabled_flags.get(mapping.optional_flag, False):
-            continue
-        if mapping.item not in mapped_items:
-            mapped_items.append(mapping.item)
-
     details: list[str] = []
     for job in sorted(jobs, key=lambda item: item.year, reverse=True):
-        source_year = job.report.year
+        source_year = job.source_year or job.report.year
         source_period = (
             "comparative"
             if source_year == job.year + 1
@@ -122,15 +118,45 @@ def workbook_source_details(
             if source_year == job.year
             else "available figures"
         )
+        written_items: list[str] = []
+        for mapping in extractor.WORKBOOK_MAPPINGS:
+            if mapping.optional_flag and not enabled_flags.get(mapping.optional_flag, False):
+                continue
+            item = mapping.item
+            raw_value = job.report.get_value(job.value_year, item)
+            if item in {"Total depreciation", "Total amortisation"} and job.report.get_value(
+                job.value_year, "D&A"
+            ) is not None:
+                continue
+            if item in {"Investments in tangible assets", "Investments in intangible assets"} and job.report.get_value(
+                job.value_year, "CAPEX"
+            ) is not None:
+                continue
+            if item == "D&A" and raw_value is None and (
+                job.report.get_value(job.value_year, "Total depreciation") is not None
+                or job.report.get_value(job.value_year, "Total amortisation") is not None
+            ):
+                continue
+            if item == "CAPEX" and raw_value is None and (
+                job.report.get_value(job.value_year, "Investments in tangible assets") is not None
+                or job.report.get_value(job.value_year, "Investments in intangible assets") is not None
+            ):
+                continue
+            if raw_value is not None and item not in written_items:
+                written_items.append(item)
         fallback_items = [
             item
-            for item in mapped_items
-            if job.report.get_value(job.value_year, item) is not None
-            and not (job.report.get_source(job.value_year, item) or "").startswith("RIK XML |")
+            for item in written_items
+            if not (job.report.get_source(job.value_year, item) or "").startswith("RIK XML |")
         ]
         parts = [f"FY{job.year} ← AR{source_year} {source_period}"]
+        document_item_label = (
+            "consolidated document items"
+            if job.report.accounting_basis == "consolidated"
+            else "document fallback items"
+        )
         parts.append(
-            f"document fallback items: {', '.join(fallback_items)}"
+            f"{document_item_label}: {', '.join(fallback_items)}"
             if fallback_items
             else "structured XML only"
         )
@@ -166,35 +192,52 @@ def add_document_fallbacks(
             primary = reports_by_year.get(year)
             if primary is not None and not needs_document_fallback(primary, year):
                 continue
-            document = select_fallback_document(documents, year)
-            if document is None:
+            candidates = fallback_document_candidates(documents, year)
+            if not candidates:
                 warnings.append(f"FY{year}: no PDF or BDOC fallback document was available.")
                 continue
-            try:
-                downloaded = client.download_document(document)
-                if downloaded_documents is not None and document.document_type == "A":
-                    downloaded_documents[year] = downloaded
-                suffix = document.extension or Path(downloaded.filename).suffix or ".bin"
-                source_path = temporary_path / f"{document.document_id}_{year}{suffix}"
-                source_path.write_bytes(downloaded.content)
-                parsed_reports = extractor.parse_reports_from_input(
-                    source_path, extractor.load_terms(None)
+            fallback = None
+            errors: list[str] = []
+            for document in candidates:
+                try:
+                    downloaded = client.download_document(document)
+                    suffix = document.extension or Path(downloaded.filename).suffix or ".bin"
+                    source_path = temporary_path / f"{document.document_id}_{year}{suffix}"
+                    source_path.write_bytes(downloaded.content)
+                    parsed_reports = extractor.parse_reports_from_input(
+                        source_path, extractor.load_terms(None)
+                    )
+                    fallback = next(
+                        (candidate for candidate in parsed_reports if candidate.year == year),
+                        parsed_reports[0],
+                    )
+                    fallback.source_path = Path(downloaded.filename)
+                    if not fallback.company:
+                        fallback.company = company_name
+                    if downloaded_documents is not None and document.document_type == "A":
+                        downloaded_documents[year] = downloaded
+                    break
+                except (RikError, OSError, ValueError, PyPdfError, IndexError) as exc:
+                    errors.append(f"{document.document_type}: {exc}")
+            if fallback is None:
+                warnings.append(
+                    f"FY{year}: document fallback could not be parsed "
+                    f"({'; '.join(errors) or 'no readable annual report'})."
                 )
-                fallback = next(
-                    (candidate for candidate in parsed_reports if candidate.year == year),
-                    parsed_reports[0],
-                )
-                fallback.source_path = Path(downloaded.filename)
-                if not fallback.company:
-                    fallback.company = company_name
-            except (RikError, OSError, ValueError) as exc:
-                warnings.append(f"FY{year}: document fallback could not be parsed ({exc}).")
                 continue
             if primary is None:
                 reports.append(fallback)
                 reports_by_year[year] = fallback
             else:
-                merge_missing(primary, fallback)
+                replaced = replace_unconsolidated_with_consolidated(primary, fallback)
+                if replaced:
+                    replaced_items = sorted({item for items in replaced.values() for item in items})
+                    warnings.append(
+                        f"FY{year}: consolidated annual-report figures replaced explicitly "
+                        f"unconsolidated XML for {', '.join(replaced_items)}."
+                    )
+                else:
+                    merge_missing(primary, fallback)
     return reports, warnings
 
 
