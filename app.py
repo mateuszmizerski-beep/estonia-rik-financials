@@ -129,8 +129,9 @@ st.write(
     "from RIK and generate a completed EUR financials workbook."
 )
 st.info(
-    "RIK XML is used for the core statements. PDF or BDOC reports are used only when "
-    "structured data is missing or detailed disclosures such as FTEs and segments are needed."
+    "Consolidated RIK XML is preferred for the core statements. If RIK exposes only "
+    "unconsolidated XML, the complete consolidated annual report replaces that financial "
+    "block; PDF or BDOC reports also supply detailed disclosures such as FTEs and segments."
 )
 
 with st.form("company_lookup"):
