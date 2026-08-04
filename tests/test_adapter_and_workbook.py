@@ -8,9 +8,9 @@ import unittest
 
 from openpyxl import load_workbook
 
-from api_adapter import preferred_report_types, report_from_lines
-from estonia_extractor import EstonianReport, load_terms
-from financials_service import generate_workbook
+from api_adapter import preferred_report_types, report_from_lines, source_report_years
+from estonia_extractor import EstonianReport, build_fill_jobs, load_terms
+from financials_service import fallback_additions, format_fallback_additions, generate_workbook
 from rik_xml_client import AnnualReportAvailability, StatementLine
 from workbook_preservation import count_extended_validations
 
@@ -78,6 +78,75 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(report.get_value(2024, "Revenue"), Decimal("2000000"))
         self.assertEqual(report.get_value(2023, "Revenue"), Decimal("1500000"))
         self.assertIn("statement 36", report.get_source(2024, "Revenue") or "")
+
+    def test_source_report_years_include_next_filing(self) -> None:
+        items = [availability("35", 2025), availability("35", 2024)]
+        self.assertEqual(source_report_years(items, [2024]), [2025, 2024])
+
+    def test_next_annual_report_comparatives_take_priority(self) -> None:
+        reports: list[EstonianReport] = []
+        for report_year, values in (
+            (2025, {2025: "100", 2024: "91"}),
+            (2024, {2024: "80", 2023: "71"}),
+            (2023, {2023: "60"}),
+        ):
+            report = EstonianReport(
+                Path(f"AR{report_year}.xml"),
+                f"AR{report_year}",
+                [],
+                load_terms(None),
+                period_start=date(report_year, 1, 1),
+                period_end=date(report_year, 12, 31),
+                company="Fixture Company",
+            )
+            for value_year, value in values.items():
+                report.set_value(
+                    value_year,
+                    "Revenue",
+                    Decimal(value),
+                    f"AR{report_year} {'current' if value_year == report_year else 'comparative'}",
+                )
+            reports.append(report)
+
+        jobs, _ = build_fill_jobs(
+            reports,
+            years=3,
+            fill_comparative=True,
+            target_years=[2025, 2024, 2023],
+        )
+        by_year = {job.year: job for job in jobs}
+        self.assertEqual(by_year[2025].report.get_value(2025, "Revenue"), Decimal("100"))
+        self.assertEqual(by_year[2024].report.get_value(2024, "Revenue"), Decimal("91"))
+        self.assertEqual(by_year[2023].report.get_value(2023, "Revenue"), Decimal("71"))
+        self.assertIn("AR2025 comparative", by_year[2024].report.get_source(2024, "Revenue") or "")
+        self.assertIn("AR2024 comparative", by_year[2023].report.get_source(2023, "Revenue") or "")
+
+    def test_fallback_message_lists_exact_added_items(self) -> None:
+        primary = EstonianReport(
+            Path("AR2024.xml"),
+            "AR2024 XML",
+            [],
+            load_terms(None),
+            period_start=date(2024, 1, 1),
+            period_end=date(2024, 12, 31),
+        )
+        fallback = EstonianReport(
+            Path("AR2024.pdf"),
+            "AR2024 PDF",
+            [],
+            load_terms(None),
+            period_start=date(2024, 1, 1),
+            period_end=date(2024, 12, 31),
+        )
+        primary.set_value(2024, "Revenue", Decimal("100"), "XML")
+        fallback.set_value(2024, "Revenue", Decimal("100"), "PDF")
+        fallback.set_value(2024, "FTEs", Decimal("42"), "PDF")
+        fallback.set_value(2024, "Goodwill amortisation", Decimal("3"), "PDF")
+        additions = fallback_additions(primary, fallback)
+        message = format_fallback_additions(2024, additions)
+        self.assertIn("FTEs", message)
+        self.assertIn("Goodwill amortisation", message)
+        self.assertNotIn("Revenue,", message)
 
 
 class WorkbookTests(unittest.TestCase):

@@ -22,10 +22,67 @@ class GeneratedWorkbook:
     messages: list[str]
 
 
+@dataclass(frozen=True)
+class FallbackAdditions:
+    value_items: dict[int, tuple[str, ...]]
+    segment_counts: dict[int, dict[str, int]]
+
+    @property
+    def has_additions(self) -> bool:
+        return bool(self.value_items or self.segment_counts)
+
+
 def safe_company_name(value: str) -> str:
     value = re.sub(r'[<>:"/\\|?*]+', "", value or "").strip()
     value = re.sub(r"\s+", " ", value)
     return value[:120] or "Estonia Company"
+
+
+def fallback_additions(
+    primary: extractor.EstonianReport | None,
+    fallback: extractor.EstonianReport,
+) -> FallbackAdditions:
+    value_items: dict[int, tuple[str, ...]] = {}
+    segment_counts: dict[int, dict[str, int]] = {}
+    for value_year, values in fallback.values.items():
+        added = sorted(
+            item
+            for item in values
+            if primary is None or primary.get_value(value_year, item) is None
+        )
+        if added:
+            value_items[value_year] = tuple(added)
+    for value_year, segmentations in fallback.segments.items():
+        for segment_by, records in segmentations.items():
+            existing = (
+                primary.segments.get(value_year, {}).get(segment_by, {})
+                if primary is not None
+                else {}
+            )
+            added_count = sum(label not in existing for label in records)
+            if added_count:
+                segment_counts.setdefault(value_year, {})[segment_by] = added_count
+    return FallbackAdditions(value_items, segment_counts)
+
+
+def format_fallback_additions(report_year: int, additions: FallbackAdditions) -> str:
+    details: list[str] = []
+    for value_year in sorted(additions.value_items, reverse=True):
+        details.append(
+            f"FY{value_year} items: {', '.join(additions.value_items[value_year])}"
+        )
+    for value_year in sorted(additions.segment_counts, reverse=True):
+        dimensions = ", ".join(
+            f"{segment_by} ({count})"
+            for segment_by, count in sorted(additions.segment_counts[value_year].items())
+        )
+        details.append(f"FY{value_year} segmentations: {dimensions}")
+    if not details:
+        return (
+            f"AR{report_year}: the source document was parsed, but it contained no "
+            "additional mapped items or segmentations."
+        )
+    return f"AR{report_year}: source document additions — {'; '.join(details)}."
 
 
 def add_document_fallbacks(
@@ -66,13 +123,13 @@ def add_document_fallbacks(
             except (RikError, OSError, ValueError) as exc:
                 warnings.append(f"FY{year}: document fallback could not be parsed ({exc}).")
                 continue
+            additions = fallback_additions(primary, fallback)
             if primary is None:
                 reports.append(fallback)
                 reports_by_year[year] = fallback
-                warnings.append(f"FY{year}: workbook values came from the source document fallback.")
             else:
                 merge_missing(primary, fallback)
-                warnings.append(f"FY{year}: missing XML values were supplemented from the source document.")
+            warnings.append(format_fallback_additions(year, additions))
     return reports, warnings
 
 
@@ -94,6 +151,7 @@ def generate_workbook(
         reports,
         years=max(len(selected_years), 1),
         fill_comparative=True,
+        target_years=selected_years,
     )
     jobs = [job for job in jobs if job.year in selected_years]
     if not jobs:

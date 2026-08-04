@@ -272,6 +272,16 @@ def preferred_report_types(
     return selected
 
 
+def source_report_years(
+    availability: list[AnnualReportAvailability], target_years: list[int]
+) -> list[int]:
+    """Return filings needed to fill targets using the next filing's comparatives."""
+    available_years = {item.fiscal_year for item in availability}
+    selected = set(target_years)
+    selected.update(year + 1 for year in target_years if year + 1 in available_years)
+    return sorted(selected, reverse=True)
+
+
 def fetch_structured_reports(
     client: RikXmlClient,
     registry_code: str,

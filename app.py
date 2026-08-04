@@ -8,7 +8,7 @@ from functools import lru_cache
 from openpyxl import load_workbook
 import streamlit as st
 
-from api_adapter import fetch_structured_reports
+from api_adapter import fetch_structured_reports, source_report_years
 from financials_service import add_document_fallbacks, generate_workbook
 from rik_xml_client import RikError, RikXmlClient
 
@@ -105,12 +105,13 @@ def document_rows(items):
 
 def load_structured(registry_code: str, company_name: str, availability, years):
     client = make_client()
+    report_years = source_report_years(availability, list(years))
     result = fetch_structured_reports(
         client,
         registry_code,
         company_name,
         availability,
-        list(years),
+        report_years,
     )
     st.session_state["structured_key"] = (registry_code, tuple(sorted(years)))
     st.session_state["structured_result"] = result
@@ -210,7 +211,7 @@ if company is not None:
             )
             fill_goodwill_amortisation = st.checkbox(
                 "Fill goodwill amortisation adjustment when disclosed",
-                value=False,
+                value=True,
             )
 
         preview_col, generate_col = st.columns(2)
@@ -249,7 +250,7 @@ if company is not None:
                             client,
                             reports,
                             documents,
-                            selected_years,
+                            source_report_years(availability, list(selected_years)),
                             company_name=company.name,
                         )
                         generation_warnings.extend(fallback_warnings)
