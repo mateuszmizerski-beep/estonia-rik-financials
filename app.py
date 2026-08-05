@@ -139,7 +139,8 @@ with st.form("company_lookup"):
         "Estonian registry code",
         value=st.session_state.get("registry_code", ""),
         max_chars=8,
-        placeholder="10421903",
+        autocomplete="off",
+        placeholder=None,
     ).strip()
     lookup = st.form_submit_button("Find annual reports", type="primary")
 
