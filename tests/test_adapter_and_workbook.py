@@ -28,6 +28,7 @@ from estonia_extractor import (
     load_terms,
 )
 from financials_service import (
+    add_xbrl_sources,
     build_annual_report_pdf_bundle,
     generate_workbook,
     workbook_source_details,
@@ -39,6 +40,7 @@ from rik_xml_client import (
     StatementLine,
 )
 from workbook_preservation import count_extended_validations
+from xbrl_parser import XbrlParseError, parse_xbrl_report
 
 
 PROJECT = Path(__file__).parents[1]
@@ -109,7 +111,146 @@ def fixture_lines(registry_code: str, year: int) -> list[StatementLine]:
     return lines
 
 
+def consolidated_xbrl_package() -> bytes:
+    xml = b'''<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+ xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:et-gaap="urn:et-gaap">
+ <xbrli:context id="I1"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="I2"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="D1"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-01-01</xbrli:startDate><xbrli:endDate>2025-12-31</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="D2"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="TR1"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="et-gaap:MaturityDimension">et-gaap:MaturityTotalAbstract</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="GW1"><xbrli:entity><xbrli:identifier scheme="urn:test">1</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="et-gaap:IntangibleAssetsDimension">et-gaap:IntangibleAssetsGoodwillAbstract</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>
+ <et-gaap:Revenue contextRef="D1" unitRef="EUR">10</et-gaap:Revenue>
+ <et-gaap:RevenueConsolidated contextRef="D1" unitRef="EUR">100</et-gaap:RevenueConsolidated>
+ <et-gaap:RevenueConsolidated contextRef="D2" unitRef="EUR">90</et-gaap:RevenueConsolidated>
+ <et-gaap:OtherIncomeConsolidated contextRef="D1" unitRef="EUR">5</et-gaap:OtherIncomeConsolidated>
+ <et-gaap:RawMaterialsAndConsumablesUsedConsolidated contextRef="D1" unitRef="EUR">-50</et-gaap:RawMaterialsAndConsumablesUsedConsolidated>
+ <et-gaap:TotalProfitLossConsolidated contextRef="D1" unitRef="EUR">20</et-gaap:TotalProfitLossConsolidated>
+ <et-gaap:TotalProfitLossConsolidated contextRef="D2" unitRef="EUR">18</et-gaap:TotalProfitLossConsolidated>
+ <et-gaap:DepreciationAndImpairmentLossReversalConsolidated contextRef="D1" unitRef="EUR">-4</et-gaap:DepreciationAndImpairmentLossReversalConsolidated>
+ <et-gaap:CurrentAssetsConsolidated contextRef="I1" unitRef="EUR">70</et-gaap:CurrentAssetsConsolidated>
+ <et-gaap:CurrentAssetsConsolidated contextRef="I2" unitRef="EUR">60</et-gaap:CurrentAssetsConsolidated>
+ <et-gaap:NonCurrentAssetsConsolidated contextRef="I1" unitRef="EUR">30</et-gaap:NonCurrentAssetsConsolidated>
+ <et-gaap:NonCurrentAssetsConsolidated contextRef="I2" unitRef="EUR">25</et-gaap:NonCurrentAssetsConsolidated>
+ <et-gaap:AccountsReceivablesConsolidated contextRef="TR1" unitRef="EUR">12</et-gaap:AccountsReceivablesConsolidated>
+ <et-gaap:AccountsReceivableConsolidated contextRef="TR1" unitRef="EUR">11</et-gaap:AccountsReceivableConsolidated>
+ <et-gaap:AverageNumberOfEmployeesInFullTimeEquivalentUnitsConsolidated contextRef="D1">7</et-gaap:AverageNumberOfEmployeesInFullTimeEquivalentUnitsConsolidated>
+ <et-gaap:IntangibleAssetsDepreciationConsolidated contextRef="GW1" unitRef="EUR">-2</et-gaap:IntangibleAssetsDepreciationConsolidated>
+ <et-gaap:NetSalesByOperatingActivitiesConsolidatedTuple>
+   <et-gaap:NetSalesByOperatingActivitiesConsolidatedName contextRef="D1">Jaekaubandus</et-gaap:NetSalesByOperatingActivitiesConsolidatedName>
+   <et-gaap:NetSalesByOperatingActivitiesConsolidatedValue contextRef="D1" unitRef="EUR">100</et-gaap:NetSalesByOperatingActivitiesConsolidatedValue>
+   <et-gaap:NetSalesByOperatingActivitiesConsolidatedValue contextRef="D2" unitRef="EUR">90</et-gaap:NetSalesByOperatingActivitiesConsolidatedValue>
+ </et-gaap:NetSalesByOperatingActivitiesConsolidatedTuple>
+ <et-gaap:NetSalesByGeographicalLocationInEuropeanUnionConsolidatedTuple>
+   <et-gaap:NameOfCountryInEuropeanUnionConsolidated contextRef="D1">Eesti</et-gaap:NameOfCountryInEuropeanUnionConsolidated>
+   <et-gaap:NetSalesInEuropeanUnionConsolidated contextRef="D1" unitRef="EUR">100</et-gaap:NetSalesInEuropeanUnionConsolidated>
+   <et-gaap:NetSalesInEuropeanUnionConsolidated contextRef="D2" unitRef="EUR">90</et-gaap:NetSalesInEuropeanUnionConsolidated>
+ </et-gaap:NetSalesByGeographicalLocationInEuropeanUnionConsolidatedTuple>
+</xbrli:xbrl>'''
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        archive.writestr("Aruanne_fixture.xbrl", xml)
+    return output.getvalue()
+
+
 class AdapterTests(unittest.TestCase):
+    def test_scope_aware_xbrl_parses_consolidated_comparatives_and_notes(self) -> None:
+        report = parse_xbrl_report(
+            consolidated_xbrl_package(),
+            registry_code="70000310",
+            company_name="Fixture Group",
+            report_year=2025,
+        )
+        self.assertEqual(report.accounting_basis, "consolidated")
+        self.assertEqual(report.get_value(2025, "Revenue"), Decimal("100"))
+        self.assertEqual(report.get_value(2024, "Revenue"), Decimal("90"))
+        self.assertEqual(report.get_value(2025, "Trade debtors / receivables"), Decimal("11"))
+        self.assertEqual(report.get_value(2025, "Goodwill amortisation"), Decimal("-2"))
+        self.assertEqual(report.get_segments(2025, "Activity")["Retail trade"].value, Decimal("100"))
+        self.assertEqual(report.get_segments(2024, "Geography")["Estonia"].value, Decimal("90"))
+        self.assertTrue((report.get_source(2025, "Revenue") or "").startswith("RIK XBRL |"))
+
+    def test_xbrl_derives_layout_two_da_from_expense_components(self) -> None:
+        with ZipFile(BytesIO(consolidated_xbrl_package())) as archive:
+            xml = archive.read("Aruanne_fixture.xbrl")
+        xml = xml.replace(
+            b'<et-gaap:DepreciationAndImpairmentLossReversalConsolidated contextRef="D1" unitRef="EUR">-4</et-gaap:DepreciationAndImpairmentLossReversalConsolidated>',
+            b'<et-gaap:CostOfGoodsSoldDepreciationConsolidated contextRef="D1" unitRef="EUR">-3</et-gaap:CostOfGoodsSoldDepreciationConsolidated><et-gaap:AdministrativeExpenseDepreciationConsolidated contextRef="D1" unitRef="EUR">-1</et-gaap:AdministrativeExpenseDepreciationConsolidated>',
+        )
+        output = BytesIO()
+        with ZipFile(output, "w") as archive:
+            archive.writestr("Aruanne_fixture.xbrl", xml)
+        report = parse_xbrl_report(
+            output.getvalue(),
+            registry_code="70000310",
+            company_name="Fixture Group",
+            report_year=2025,
+        )
+        self.assertEqual(report.get_value(2025, "D&A"), Decimal("-4"))
+        self.assertIn("derived D&A", report.get_source(2025, "D&A") or "")
+
+    def test_xbrl_replaces_unconsolidated_statement_xml_before_pdf_fallback(self) -> None:
+        primary = EstonianReport(
+            Path("statement.xml"),
+            "RIK unconsolidated statements FY2025",
+            [],
+            load_terms(None),
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 12, 31),
+            company="Fixture Group",
+            accounting_basis="unconsolidated",
+        )
+        for item, value in {
+            "Revenue": "10",
+            "Reported EBIT": "2",
+            "Current assets": "7",
+            "Fixed assets": "3",
+        }.items():
+            primary.set_value(2025, item, Decimal(value), "RIK XML | fixture")
+        document = CompanyDocument(
+            "xbrl-2025",
+            "70000310",
+            "X",
+            "Annual report XBRL",
+            None,
+            date(2026, 1, 1),
+            "K",
+            "A",
+            2025,
+            "https://example.invalid/xbrl",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+        class DownloadClient:
+            @staticmethod
+            def download_document(_document):
+                return DownloadedDocument(
+                    consolidated_xbrl_package(), "fixture.zip", "application/zip"
+                )
+
+        reports, warnings = add_xbrl_sources(
+            DownloadClient(),
+            [primary],
+            [document],
+            [2025],
+            registry_code="70000310",
+            company_name="Fixture Group",
+            retry_delay_seconds=0,
+        )
+        self.assertEqual(reports[0].accounting_basis, "consolidated")
+        self.assertEqual(reports[0].get_value(2025, "Revenue"), Decimal("100"))
+        self.assertTrue(any("replaced explicitly unconsolidated" in warning for warning in warnings))
+
+    def test_xbrl_parser_rejects_web_page_downloads(self) -> None:
+        with self.assertRaises(XbrlParseError):
+            parse_xbrl_report(
+                b"<!DOCTYPE html><html><body>rate limited</body></html>",
+                registry_code="70000310",
+                company_name="Fixture Group",
+                report_year=2025,
+            )
+
     def test_consolidated_statements_are_preferred(self) -> None:
         items = [
             availability("14"),
@@ -319,6 +460,15 @@ class AdapterTests(unittest.TestCase):
                 )
             reports.append(report)
 
+        next_report = next(report for report in reports if report.year == 2025)
+        current_report = next(report for report in reports if report.year == 2024)
+        next_report.set_segment_value(
+            2024, "Activity", "Revised label", Decimal("91"), "RIK XBRL | AR2025", "Activity", 1
+        )
+        current_report.set_segment_value(
+            2024, "Activity", "Legacy label", Decimal("80"), "RIK XBRL | AR2024", "Activity", 1
+        )
+
         jobs, _ = build_fill_jobs(
             reports,
             years=3,
@@ -331,6 +481,9 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(by_year[2023].report.get_value(2023, "Revenue"), Decimal("71"))
         self.assertIn("AR2025 comparative", by_year[2024].report.get_source(2024, "Revenue") or "")
         self.assertIn("AR2024 comparative", by_year[2023].report.get_source(2023, "Revenue") or "")
+        self.assertEqual(
+            set(by_year[2024].report.get_segments(2024, "Activity")), {"Revised label"}
+        )
 
         by_year[2024].report.set_value(2024, "FTEs", Decimal("42"), "AR2025 PDF")
         details = workbook_source_details(
@@ -341,7 +494,7 @@ class AdapterTests(unittest.TestCase):
         )
         detail_2024 = next(detail for detail in details if detail.startswith("FY2024"))
         self.assertIn("FY2024 ← AR2025 comparative", detail_2024)
-        self.assertIn("document fallback items: FTEs", detail_2024)
+        self.assertIn("PDF/BDOC fallback items: FTEs", detail_2024)
 
     def test_comparative_value_keeps_target_year_period_dates(self) -> None:
         current = EstonianReport(

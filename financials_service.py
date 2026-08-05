@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
+import time
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import load_workbook
@@ -20,9 +21,11 @@ from api_adapter import (
     replace_unconsolidated_with_consolidated,
     select_annual_report_pdf,
     select_fallback_document,
+    select_xbrl_document,
 )
 from rik_xml_client import CompanyDocument, DownloadedDocument, RikError, RikXmlClient
 from workbook_preservation import restore_extended_validations
+from xbrl_parser import XbrlParseError, parse_xbrl_report
 
 
 @dataclass(frozen=True)
@@ -144,35 +147,122 @@ def workbook_source_details(
                 continue
             if raw_value is not None and item not in written_items:
                 written_items.append(item)
-        fallback_items = [
+        xbrl_items = [
             item
             for item in written_items
-            if not (job.report.get_source(job.value_year, item) or "").startswith("RIK XML |")
+            if (job.report.get_source(job.value_year, item) or "").startswith("RIK XBRL |")
+        ]
+        xml_items = [
+            item
+            for item in written_items
+            if (job.report.get_source(job.value_year, item) or "").startswith("RIK XML |")
+        ]
+        fallback_items = [
+            item for item in written_items if item not in xbrl_items and item not in xml_items
         ]
         parts = [f"FY{job.year} ← AR{source_year} {source_period}"]
-        document_item_label = (
-            "consolidated document items"
-            if job.report.accounting_basis == "consolidated"
-            else "document fallback items"
-        )
-        parts.append(
-            f"{document_item_label}: {', '.join(fallback_items)}"
-            if fallback_items
-            else "structured XML only"
-        )
+        if xbrl_items:
+            xbrl_label = (
+                "consolidated XBRL items"
+                if job.report.accounting_basis == "consolidated"
+                else "XBRL items"
+            )
+            parts.append(f"{xbrl_label}: {', '.join(xbrl_items)}")
+        if xml_items:
+            parts.append(f"statement XML items: {', '.join(xml_items)}")
+        if fallback_items:
+            parts.append(f"PDF/BDOC fallback items: {', '.join(fallback_items)}")
+        if not (xbrl_items or xml_items or fallback_items):
+            parts.append("no mapped items")
         if fill_segments:
-            segment_counts: list[str] = []
+            segment_counts: dict[str, list[str]] = {"XBRL": [], "PDF/BDOC fallback": []}
             for segment_by, records in sorted(job.report.segments.get(job.value_year, {}).items()):
-                count = sum(
-                    not (record.source or "").startswith("RIK XML |")
+                xbrl_count = sum(
+                    (record.source or "").startswith("RIK XBRL |")
                     for record in records.values()
                 )
-                if count:
-                    segment_counts.append(f"{segment_by} ({count})")
-            if segment_counts:
-                parts.append(f"document segmentations: {', '.join(segment_counts)}")
+                fallback_count = len(records) - xbrl_count
+                if xbrl_count:
+                    segment_counts["XBRL"].append(f"{segment_by} ({xbrl_count})")
+                if fallback_count:
+                    segment_counts["PDF/BDOC fallback"].append(
+                        f"{segment_by} ({fallback_count})"
+                    )
+            for label, counts in segment_counts.items():
+                if counts:
+                    parts.append(f"{label} segmentations: {', '.join(counts)}")
         details.append(" — ".join(parts) + ".")
     return details
+
+
+def add_xbrl_sources(
+    client: RikXmlClient,
+    reports: list[extractor.EstonianReport],
+    documents: list[CompanyDocument],
+    fiscal_years: list[int],
+    *,
+    registry_code: str,
+    company_name: str,
+    retry_delay_seconds: float = 16.0,
+) -> tuple[list[extractor.EstonianReport], list[str]]:
+    """Make scope-matched annual-report XBRL the primary structured source."""
+    reports_by_year = {report.year: report for report in reports if report.period_end is not None}
+    warnings: list[str] = []
+    for year in sorted(set(fiscal_years), reverse=True):
+        document = select_xbrl_document(documents, year)
+        if document is None:
+            warnings.append(f"FY{year}: no valid annual-report XBRL package was available from RIK.")
+            continue
+        parsed = None
+        errors: list[str] = []
+        for attempt in range(2):
+            try:
+                downloaded = client.download_document(document)
+                parsed = parse_xbrl_report(
+                    downloaded.content,
+                    registry_code=registry_code,
+                    company_name=company_name,
+                    report_year=year,
+                    source_name=downloaded.filename,
+                )
+                break
+            except (RikError, XbrlParseError) as exc:
+                errors.append(str(exc))
+                if attempt == 0 and retry_delay_seconds > 0:
+                    time.sleep(retry_delay_seconds)
+        if parsed is None:
+            warnings.append(
+                f"FY{year}: XBRL could not be used ({errors[-1] if errors else 'unknown error'}); "
+                "statement XML/PDF fallback remains active."
+            )
+            continue
+
+        prior = reports_by_year.get(year)
+        if prior is not None:
+            if prior.accounting_basis == "consolidated" and parsed.accounting_basis != "consolidated":
+                merge_missing(prior, parsed)
+                warnings.append(
+                    f"FY{year}: the XBRL package lacked consolidated primary statements, so the "
+                    "consolidated statement XML remained primary."
+                )
+                continue
+            if not (
+                parsed.accounting_basis == "consolidated"
+                and prior.accounting_basis == "unconsolidated"
+            ):
+                merge_missing(parsed, prior)
+            else:
+                warnings.append(
+                    f"FY{year}: consolidated XBRL replaced explicitly unconsolidated statement XML."
+                )
+            for index, existing in enumerate(reports):
+                if existing is prior:
+                    reports[index] = parsed
+                    break
+        else:
+            reports.append(parsed)
+        reports_by_year[year] = parsed
+    return reports, warnings
 
 
 def add_document_fallbacks(

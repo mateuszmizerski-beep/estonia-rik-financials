@@ -2009,9 +2009,10 @@ def combined_report_for_year(
             combined.set_value(year, item, value, report.get_source(year, item) or "Annual report")
         for segment_by, records in report.segments.get(year, {}).items():
             combined_records = combined.segments.setdefault(year, {}).setdefault(segment_by, {})
+            if combined_records:
+                continue
             for label, record in records.items():
-                if label not in combined_records:
-                    combined_records[label] = copy(record)
+                combined_records[label] = copy(record)
 
     return combined
 

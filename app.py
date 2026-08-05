@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ import streamlit as st
 from api_adapter import fetch_structured_reports, source_report_years
 from financials_service import (
     add_document_fallbacks,
+    add_xbrl_sources,
     build_annual_report_pdf_bundle,
     generate_workbook,
 )
@@ -20,7 +22,7 @@ from rik_xml_client import RikError, RikXmlClient
 APP_DIR = Path(__file__).parent
 TEMPLATE_PATH = APP_DIR / "assets" / "gainpro_template_eur.xlsx"
 MAX_YEARS = 6
-# Parser revision: Exmet regression (D&A source priority and segment rest buckets).
+# Parser revision: consolidated annual-report XBRL is the primary structured source.
 
 
 @lru_cache(maxsize=1)
@@ -123,6 +125,49 @@ def load_structured(registry_code: str, company_name: str, availability, years):
     return result
 
 
+def load_primary_sources(
+    registry_code: str,
+    company_name: str,
+    availability,
+    documents,
+    years,
+    structured,
+):
+    source_years = source_report_years(availability, list(years), documents)
+    reports, warnings = add_xbrl_sources(
+        make_client(),
+        list(structured.reports),
+        documents,
+        source_years,
+        registry_code=registry_code,
+        company_name=company_name,
+    )
+    key = (registry_code, tuple(sorted(years)))
+    st.session_state["primary_sources_key"] = key
+    st.session_state["primary_reports"] = reports
+    st.session_state["xbrl_warnings"] = warnings
+    return reports, warnings
+
+
+def xbrl_preview_rows(reports):
+    rows = []
+    for report in sorted(reports, key=lambda item: item.year, reverse=True):
+        for value_year, values in sorted(report.values.items(), reverse=True):
+            for item, value in values.items():
+                source = report.get_source(value_year, item) or ""
+                rows.append(
+                    {
+                        "Annual report": report.year,
+                        "Scope": report.accounting_basis.title(),
+                        "Value year": value_year,
+                        "Item": item,
+                        "Value": str(value),
+                        "Primary source": "XBRL" if source.startswith("RIK XBRL |") else "Statement XML",
+                    }
+                )
+    return rows
+
+
 st.set_page_config(page_title="Gain Estonia Financials", page_icon="🇪🇪", layout="wide")
 st.title("Gain Estonia Financials Extractor")
 st.write(
@@ -130,9 +175,9 @@ st.write(
     "from RIK and generate a completed EUR financials workbook."
 )
 st.info(
-    "Consolidated RIK XML is preferred for the core statements. If RIK exposes only "
-    "unconsolidated XML, the complete consolidated annual report replaces that financial "
-    "block; PDF or BDOC reports also supply detailed disclosures such as FTEs and segments."
+    "The app uses scope-matched annual-report XBRL first, including consolidated facts and "
+    "comparatives when available. RIK statement XML is the second structured source; PDF or "
+    "BDOC reports fill only remaining gaps and non-tabular disclosures."
 )
 
 with st.form("company_lookup"):
@@ -160,6 +205,9 @@ if lookup:
             st.session_state["availability"] = availability
             st.session_state["documents"] = documents
             st.session_state.pop("structured_result", None)
+            st.session_state.pop("primary_sources_key", None)
+            st.session_state.pop("primary_reports", None)
+            st.session_state.pop("xbrl_warnings", None)
             st.session_state.pop("generated_workbook", None)
             st.session_state.pop("annual_report_pdf_bundle", None)
         except RikError as exc:
@@ -214,7 +262,7 @@ if company is not None:
         )
         with st.expander("Advanced settings"):
             use_document_fallback = st.checkbox(
-                "Use PDF/BDOC reports to supplement missing XML values and segmentations",
+                "Use PDF/BDOC reports to supplement missing XBRL/XML values and disclosures",
                 value=True,
             )
             fill_goodwill_amortisation = st.checkbox(
@@ -235,8 +283,18 @@ if company is not None:
 
         if preview_clicked:
             try:
-                with st.spinner("Retrieving selected statements..."):
-                    load_structured(company.registry_code, company.name, availability, selected_years)
+                with st.spinner("Retrieving statement XML and annual-report XBRL packages..."):
+                    structured = load_structured(
+                        company.registry_code, company.name, availability, selected_years
+                    )
+                    load_primary_sources(
+                        company.registry_code,
+                        company.name,
+                        availability,
+                        documents,
+                        selected_years,
+                        structured,
+                    )
             except RikError as exc:
                 st.error(str(exc))
 
@@ -250,8 +308,20 @@ if company is not None:
                         structured = load_structured(
                             company.registry_code, company.name, availability, selected_years
                         )
-                    reports = list(structured.reports)
-                    generation_warnings = list(structured.warnings)
+                    if st.session_state.get("primary_sources_key") == key:
+                        reports = list(st.session_state["primary_reports"])
+                        xbrl_warnings = list(st.session_state.get("xbrl_warnings", []))
+                    else:
+                        reports, xbrl_warnings = load_primary_sources(
+                            company.registry_code,
+                            company.name,
+                            availability,
+                            documents,
+                            selected_years,
+                            structured,
+                        )
+                    reports = deepcopy(reports)
+                    generation_warnings = list(structured.warnings) + xbrl_warnings
                     client = make_client()
                     downloaded_annual_reports = {}
                     if use_document_fallback:
@@ -259,7 +329,7 @@ if company is not None:
                             client,
                             reports,
                             documents,
-                            source_report_years(availability, list(selected_years)),
+                            source_report_years(availability, list(selected_years), documents),
                             company_name=company.name,
                             downloaded_documents=downloaded_annual_reports,
                         )
@@ -300,6 +370,18 @@ if company is not None:
                         use_container_width=True,
                         height=420,
                     )
+
+        primary_reports = st.session_state.get("primary_reports")
+        if primary_reports:
+            for warning in st.session_state.get("xbrl_warnings", []):
+                st.warning(warning)
+            with st.expander("Primary XBRL/XML financial preview", expanded=True):
+                st.dataframe(
+                    xbrl_preview_rows(primary_reports),
+                    hide_index=True,
+                    use_container_width=True,
+                    height=420,
+                )
 
         generated = st.session_state.get("generated_workbook")
         if generated is not None:

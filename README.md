@@ -1,7 +1,7 @@
 # Gain Estonia Financials Extractor
 
-Public Streamlit app for retrieving structured Estonian annual-report data from
-RIK's SOAP/XML service and filling the Gain EUR financials template.
+Public Streamlit app for retrieving Estonian annual-report XBRL and statement
+data from RIK and filling the Gain EUR financials template.
 
 ## Local setup
 
@@ -17,22 +17,22 @@ redacted.
 
 ## Data flow
 
-- Consolidated RIK structured statement rows are the primary source whenever
-  RIK exposes them.
-- If RIK exposes only explicitly unconsolidated statement types but the complete
-  annual report contains consolidated statements, the consolidated document
-  replaces the whole financial block. The app does not mix consolidated and
-  unconsolidated figures within a fiscal year.
-- Unconsolidated XML is used only when no consolidated source is available.
+- The full annual-report XBRL package is the primary structured source. The
+  parser chooses consolidated facts when the package contains a complete group
+  statement block and otherwise uses the standalone facts.
+- RIK's statement-line XML API is the second structured source. Explicitly
+  unconsolidated statement XML is never mixed into a consolidated XBRL block.
+- PDF or BDOC annual reports fill only remaining gaps and narrative disclosures.
 - Each historical year prefers the comparative column in the following year's
   annual report (for example, FY2024 comes from AR2025) so later corrections
   and reclassifications are retained. The same-year report is the fallback,
   and still supplies the target year's reporting-period dates for any required
   annualisation.
-- PDF or BDOC annual reports supplement missing FTE, segment, and disclosure
-  data through the existing Estonia parser.
-- The generation report lists the exact mapped items added by document
-  fallback and the number of added segment records by dimension.
+- XBRL note facts supply FTE, goodwill amortisation, trade balances, CAPEX, and
+  revenue segmentations where disclosed. PDF or BDOC parsing remains available
+  for missing or non-tabular disclosures.
+- The generation report lists exact XBRL, statement XML, and PDF/BDOC items plus
+  the segment-record counts by source and dimension.
 - A single ZIP download contains the complete RIK annual-report PDF for each
   fiscal year selected for the Excel workbook, when RIK provides one.
 - Only directly sourceable raw inputs are written. Template formulas remain

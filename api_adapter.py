@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import copy
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import re
 import unicodedata
@@ -326,10 +327,18 @@ def preferred_report_types(
 
 
 def source_report_years(
-    availability: list[AnnualReportAvailability], target_years: list[int]
+    availability: list[AnnualReportAvailability],
+    target_years: list[int],
+    documents: list[CompanyDocument] | None = None,
 ) -> list[int]:
     """Return filings needed to fill targets using the next filing's comparatives."""
     available_years = {item.fiscal_year for item in availability}
+    if documents:
+        available_years.update(
+            document.fiscal_year
+            for document in documents
+            if document.document_type == "X" and document.fiscal_year is not None
+        )
     selected = set(target_years)
     selected.update(year + 1 for year in target_years if year + 1 in available_years)
     return sorted(selected, reverse=True)
@@ -384,7 +393,8 @@ def merge_missing(primary: EstonianReport, fallback: EstonianReport) -> Estonian
             values.get(item) is not None
             for item in ("Total depreciation", "Total amortisation")
         )
-        if has_detailed_da:
+        primary_da_source = primary.get_source(year, "D&A") or ""
+        if has_detailed_da and not primary_da_source.startswith("RIK XBRL |"):
             # The statement-level D&A row can differ from the audited fixed-asset
             # notes. When both note components are disclosed, keep the more
             # granular pair and let the workbook calculate their combined total.
@@ -398,6 +408,11 @@ def merge_missing(primary: EstonianReport, fallback: EstonianReport) -> Estonian
     for year, segmentations in fallback.segments.items():
         for segment_by, records in segmentations.items():
             destination = primary.segments.setdefault(year, {}).setdefault(segment_by, {})
+            if destination and any(
+                (record.source or "").startswith("RIK XBRL |")
+                for record in destination.values()
+            ):
+                continue
             for label, record in records.items():
                 if label not in destination:
                     destination[label] = copy(record)
@@ -506,6 +521,29 @@ def select_fallback_document(
     documents: list[CompanyDocument], fiscal_year: int
 ) -> CompanyDocument | None:
     candidates = fallback_document_candidates(documents, fiscal_year)
+    return candidates[0] if candidates else None
+
+
+def select_xbrl_document(
+    documents: list[CompanyDocument], fiscal_year: int
+) -> CompanyDocument | None:
+    """Select the latest valid full annual-report XBRL package for a fiscal year."""
+    candidates = [
+        document
+        for document in documents
+        if document.fiscal_year == fiscal_year
+        and document.document_type == "X"
+        and document.validity in {None, "", "K"}
+        and document.report_kind in {None, "", "A", "P"}
+    ]
+    candidates.sort(
+        key=lambda document: (
+            document.status_date or date.min,
+            document.size_bytes or 0,
+            document.document_id,
+        ),
+        reverse=True,
+    )
     return candidates[0] if candidates else None
 
 
