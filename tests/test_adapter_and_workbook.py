@@ -19,7 +19,14 @@ from api_adapter import (
     report_from_lines,
     source_report_years,
 )
-from estonia_extractor import EstonianReport, build_fill_jobs, load_terms
+from estonia_extractor import (
+    EstonianReport,
+    SegmentRecord,
+    build_fill_jobs,
+    build_segment_summary_rows,
+    extract_financial_values,
+    load_terms,
+)
 from financials_service import (
     build_annual_report_pdf_bundle,
     generate_workbook,
@@ -174,6 +181,15 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(blrt.get_value(2024, "Current assets"), Decimal("101073000"))
         self.assertEqual(blrt.get_value(2024, "Other income"), Decimal("8538000"))
         self.assertEqual(blrt.get_value(2024, "CAPEX"), Decimal("-16892000"))
+
+        exmet = report_from_lines(
+            "11739524", "OÜ Exmet", 2025, fixture_lines("11739524", 2025)
+        )
+        self.assertEqual(exmet.accounting_basis, "unconsolidated")
+        self.assertEqual(exmet.get_value(2025, "Revenue"), Decimal("110588963"))
+        self.assertEqual(exmet.get_value(2024, "Revenue"), Decimal("101764309"))
+        self.assertEqual(exmet.get_value(2025, "Debt ST"), Decimal("27316866"))
+        self.assertEqual(exmet.get_value(2025, "Debt LT"), Decimal("17401296"))
 
     def test_consolidated_document_replaces_unconsolidated_xml_as_a_block(self) -> None:
         primary = report_from_lines(
@@ -361,6 +377,68 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(jobs[0].period_start, date(2019, 11, 12))
         self.assertEqual(jobs[0].period_end, date(2020, 12, 31))
         self.assertTrue(jobs[0].requires_annualisation)
+
+    def test_small_geographies_are_retained_in_synthetic_rest_rows(self) -> None:
+        first_records: dict[str, SegmentRecord] = {}
+        last_records: dict[str, SegmentRecord] = {}
+        for order in range(1, 14):
+            label = f"Country {order}"
+            group = "EU" if order <= 9 else "WORLD"
+            first_records[label] = SegmentRecord(
+                Decimal("1000000"), "Revenue note", group, order
+            )
+            last_records[label] = SegmentRecord(
+                Decimal("2000000"), "Revenue note", group, order
+            )
+        for order, (label, group, value) in enumerate(
+            (("Tiny EU 1", "EU", "5206"), ("Tiny EU 2", "EU", "400"), ("Tiny World", "WORLD", "1579")),
+            start=14,
+        ):
+            first_records[label] = SegmentRecord(Decimal("0"), "Revenue note", group, order)
+            last_records[label] = SegmentRecord(Decimal(value), "Revenue note", group, order)
+
+        rows = build_segment_summary_rows(first_records, last_records)
+        by_label = {row.label: row for row in rows}
+
+        self.assertEqual(len(rows), 15)
+        self.assertEqual(by_label["Rest of EU"].last_value, Decimal("5606"))
+        self.assertEqual(by_label["Rest of the world"].last_value, Decimal("1579"))
+        self.assertEqual(
+            sum(row.last_value for row in rows),
+            sum(record.value for record in last_records.values()),
+        )
+
+    def test_income_statement_da_precedes_cash_flow_adjustment(self) -> None:
+        report = EstonianReport(
+            Path("annual-report.pdf"),
+            "Consolidated annual report",
+            [
+                "Konsolideeritud bilanss",
+                "(eurodes)",
+                "Konsolideeritud kasumiaruanne",
+                "(eurodes)",
+                "Põhivarade kulum ja väärtuse langus",
+                "-997 340",
+                "-707 976",
+                "Konsolideeritud rahavoogude aruanne",
+                "(eurodes)",
+                "Põhivarade kulum ja väärtuse langus",
+                "1 008 793",
+                "707 976",
+                "Konsolideeritud omakapitali muutuste aruanne",
+            ],
+            load_terms(None),
+            period_start=date(2020, 1, 1),
+            period_end=date(2020, 12, 31),
+            company="Fixture Company",
+            accounting_basis="consolidated",
+        )
+
+        extract_financial_values(report)
+
+        self.assertEqual(report.get_value(2020, "D&A"), Decimal("-997340"))
+        self.assertEqual(report.get_value(2019, "D&A"), Decimal("-707976"))
+        self.assertIn("Income statement", report.get_source(2020, "D&A") or "")
 
 
 class WorkbookTests(unittest.TestCase):

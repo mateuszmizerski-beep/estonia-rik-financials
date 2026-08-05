@@ -20,6 +20,7 @@ from rik_xml_client import RikError, RikXmlClient
 APP_DIR = Path(__file__).parent
 TEMPLATE_PATH = APP_DIR / "assets" / "gainpro_template_eur.xlsx"
 MAX_YEARS = 6
+# Parser revision: Exmet regression (D&A source priority and segment rest buckets).
 
 
 @lru_cache(maxsize=1)

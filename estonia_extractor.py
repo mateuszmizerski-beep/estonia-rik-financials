@@ -1172,7 +1172,11 @@ def extract_financial_values(report: EstonianReport) -> None:
     assign_dual(report, income, "Other income", "Income statement")
     assign_dual(report, income, "COGS", "Income statement")
     assign_dual(report, income, "Reported EBIT", "Income statement")
-    assign_dual(report, cashflow, "D&A", "Cash flow statement")
+    # EBITDA must add back the D&A expense included in EBIT. The similarly named
+    # cash-flow adjustment can differ because it may include other non-cash
+    # movements, so use it only when the income statement has no D&A line.
+    assign_dual(report, income, "D&A", "Income statement")
+    assign_note_dual_if_missing(report, cashflow, "D&A", "Cash flow statement")
     assign_dual(
         report,
         balance,
@@ -2261,11 +2265,20 @@ def build_segment_summary_rows(
     capacity = SEGMENT_ROW_END - SEGMENT_ROW_START + 1
     selected_explicit = list(explicit_labels)
     if len(labels) > capacity:
-        reserve_groups = {
-            (last_records.get(label) or first_records[label]).group
-            for label in rest_labels
-            if (last_records.get(label) or first_records.get(label))
-        }
+        reserve_groups: set[str] = set()
+        for label in rest_labels:
+            record = last_records.get(label) or first_records.get(label)
+            group = (
+                "EU"
+                if label == "Rest of EU"
+                else "WORLD"
+                if label == "Rest of the world"
+                else record.group
+                if record is not None
+                else ""
+            )
+            if group:
+                reserve_groups.add(group)
         slots = max(0, capacity - max(1, len(reserve_groups)))
         ranked_explicit = sorted(
             explicit_labels,
