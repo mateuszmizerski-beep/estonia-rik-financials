@@ -240,7 +240,7 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertEqual(reports[0].accounting_basis, "consolidated")
         self.assertEqual(reports[0].get_value(2025, "Revenue"), Decimal("100"))
-        self.assertTrue(any("replaced explicitly unconsolidated" in warning for warning in warnings))
+        self.assertEqual(warnings, [])
 
     def test_xbrl_parser_rejects_web_page_downloads(self) -> None:
         with self.assertRaises(XbrlParseError):

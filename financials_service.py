@@ -251,10 +251,6 @@ def add_xbrl_sources(
                 and prior.accounting_basis == "unconsolidated"
             ):
                 merge_missing(parsed, prior)
-            else:
-                warnings.append(
-                    f"FY{year}: consolidated XBRL replaced explicitly unconsolidated statement XML."
-                )
             for index, existing in enumerate(reports):
                 if existing is prior:
                     reports[index] = parsed
