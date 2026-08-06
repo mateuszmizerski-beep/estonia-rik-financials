@@ -642,6 +642,25 @@ class WorkbookTests(unittest.TestCase):
             workbook.close()
             self.assertEqual(count_extended_validations(output), 2)
 
+    def test_blank_financial_value_has_blank_confidence_level(self) -> None:
+        report = self.make_report(365)
+        report.set_value(2024, "Stocks / inventories", Decimal("0"), "RIK balance row 60")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.xlsx"
+            generate_workbook(
+                [report],
+                [2024],
+                TEMPLATE,
+                output,
+                company_name="Fixture Company",
+            )
+            workbook = load_workbook(output, data_only=False)
+            worksheet = workbook["Financials"]
+            self.assertIsNone(worksheet["P157"].value)
+            self.assertIsNone(worksheet["P52"].value)
+            self.assertEqual(worksheet["P42"].value, "Actual")
+            workbook.close()
+
     def test_complete_annual_report_pdfs_are_bundled_by_year(self) -> None:
         document = CompanyDocument(
             document_id="pdf-2024",

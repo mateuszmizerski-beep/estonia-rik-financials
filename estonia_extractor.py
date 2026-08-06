@@ -2641,6 +2641,7 @@ def fill_period(
     col_letter = get_column_letter(col)
     messages: list[str] = []
     confidence_labels: set[str] = set()
+    considered_confidence_labels: set[str] = set()
     annualisation_rows: dict[str, int] | None = None
     if job.requires_annualisation:
         annualisation_rows, annualisation_messages = configure_annualisation(
@@ -2657,6 +2658,9 @@ def fill_period(
         if mapping.optional_flag and not enabled_flags.get(mapping.optional_flag, False):
             messages.append(f"SKIP {col_letter} {mapping.row_label}: optional mapping disabled")
             continue
+
+        if mapping.confidence_label:
+            considered_confidence_labels.add(mapping.confidence_label)
 
         row = find_row(
             ws,
@@ -2728,7 +2732,9 @@ def fill_period(
             messages.append(f"SKIP {col_letter}{row} {mapping.row_label}: cell already populated")
             continue
 
-        if mapping.confidence_label:
+        # A sourced zero can intentionally render as a blank cell. Confidence must
+        # follow the visible workbook value rather than the raw source value.
+        if mapping.confidence_label and value is not None:
             confidence_labels.add(mapping.confidence_label)
 
         if not dry_run:
@@ -2753,8 +2759,10 @@ def fill_period(
 
     if "Adjusted EBITDA" in confidence_labels:
         confidence_labels.add("Adjusted EBIT")
+    if "Adjusted EBITDA" in considered_confidence_labels:
+        considered_confidence_labels.add("Adjusted EBIT")
 
-    for confidence_label in sorted(confidence_labels):
+    for confidence_label in sorted(considered_confidence_labels):
         try:
             confidence_row = find_confidence_row(ws, confidence_label)
         except ValueError:
@@ -2762,6 +2770,13 @@ def fill_period(
             continue
 
         confidence_cell = ws.cell(row=confidence_row, column=col)
+        if confidence_label not in confidence_labels:
+            if overwrite:
+                if not dry_run:
+                    confidence_cell.value = None
+                messages.append(f"CLEAR {col_letter}{confidence_row} {confidence_label}: no visible value")
+            continue
+
         if overwrite or cell_is_empty(confidence_cell):
             if not dry_run:
                 confidence_cell.value = "Actual"
