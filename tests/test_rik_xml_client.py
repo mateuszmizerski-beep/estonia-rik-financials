@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from rik_xml_client import RikXmlClient
+from rik_xml_client import RikAuthenticationError, RikXmlClient
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -59,6 +59,29 @@ class RikXmlClientTests(unittest.TestCase):
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0].document_type, "A")
         self.assertEqual(documents[0].extension, ".pdf")
+
+    def test_http_500_soap_authentication_fault_is_not_reported_as_generic_500(self) -> None:
+        fault = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+          <SOAP-ENV:Body>
+            <SOAP-ENV:Fault>
+              <faultcode>SOAP-ENV:Server</faultcode>
+              <faultstring>Incorrect user name or password.</faultstring>
+            </SOAP-ENV:Fault>
+          </SOAP-ENV:Body>
+        </SOAP-ENV:Envelope>"""
+
+        class FaultSession(FakeSession):
+            def post(self, *args, **kwargs) -> FakeResponse:
+                return FakeResponse(fault, status_code=500)
+
+        client = RikXmlClient(
+            "fixture-user", "fixture-password", session=FaultSession([])
+        )
+        with self.assertRaisesRegex(
+            RikAuthenticationError, "RIK rejected the configured credentials"
+        ):
+            client.get_company_summary("70000310")
 
 
 if __name__ == "__main__":

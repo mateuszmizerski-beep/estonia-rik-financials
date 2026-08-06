@@ -201,18 +201,20 @@ class RikXmlClient:
         except requests.RequestException as exc:
             raise RikError("RIK could not be reached. Please try again.") from exc
 
-        if response.status_code in {401, 403}:
-            raise RikAuthenticationError("RIK rejected the configured credentials.")
-        if response.status_code >= 400:
-            raise RikError(f"RIK returned HTTP {response.status_code}.")
         if len(response.content) > 15 * 1024 * 1024:
             raise RikResponseError("RIK returned an unexpectedly large XML response.")
 
         try:
             root = ET.fromstring(response.content)
         except ET.ParseError as exc:
+            if response.status_code in {401, 403}:
+                raise RikAuthenticationError("RIK rejected the configured credentials.") from exc
+            if response.status_code >= 400:
+                raise RikError(f"RIK returned HTTP {response.status_code}.") from exc
             raise RikResponseError("RIK returned malformed XML.") from exc
 
+        # SOAP services commonly return faults with HTTP 500. Parse the fault before
+        # applying generic HTTP handling so authentication failures remain actionable.
         fault = _first(root, "Fault")
         if fault is not None:
             fault_text = _text(fault, "faultstring") or _text(fault, "Text") or "RIK rejected the query."
@@ -220,6 +222,11 @@ class RikXmlClient:
             if any(token in lowered for token in ("parool", "password", "kasutaja", "auth")):
                 raise RikAuthenticationError("RIK rejected the configured credentials.")
             raise RikError(fault_text[:300])
+
+        if response.status_code in {401, 403}:
+            raise RikAuthenticationError("RIK rejected the configured credentials.")
+        if response.status_code >= 400:
+            raise RikError(f"RIK returned HTTP {response.status_code}.")
 
         response_body = _first(root, "Body")
         keha = _first(response_body, "keha") if response_body is not None else None
